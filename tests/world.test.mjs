@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TERRAINS, START_HEX, createWorld, hexKey, neighbors, axialToWorld, frontierTiles,
+  TERRAINS, START_HEX, STATIONS, createWorld, hexKey, neighbors, axialToWorld, frontierTiles,
   addTile, paintTile, summarizeWorld, seededRandom,
 } from '../dist/world.js';
 
@@ -41,6 +41,26 @@ test('all six neighbors project to touching hex centers at every radius', () => 
       assert.ok(Math.abs(Math.hypot(position.x - center.x, position.y - center.y) - Math.sqrt(3) * size) < 1e-10);
     }
   }
+});
+
+test('all three stations have distinct anchored tiles and survive paint and expansion', () => {
+  const world = createWorld();
+  const previous = Object.entries(STATIONS).map(([id, position]) => {
+    const tile = world.get(hexKey(position.q, position.r));
+    assert.equal(tile.station, id);
+    assert.ok(tile.number > 0);
+    return { ...tile };
+  });
+  assert.equal(new Set(previous.map(tile => hexKey(tile.q, tile.r))).size, 3);
+  assert.equal(previous[0].number, 1);
+  for (const tile of previous) {
+    const painted = paintTile(world, tile.q, tile.r, 'grove');
+    assert.equal(painted.station, tile.station);
+    assert.equal(painted.number, tile.number);
+  }
+  const frontier = frontierTiles(world)[0];
+  addTile(world, frontier.q, frontier.r);
+  for (const tile of previous) assert.equal(world.get(hexKey(tile.q, tile.r)).station, tile.station);
 });
 
 test('hex 01 is the anchored starting workbench and survives terrain edits and expansion', () => {

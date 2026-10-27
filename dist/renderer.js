@@ -4,6 +4,8 @@ const TAU = Math.PI * 2;
 const TILT = 0.58;
 const CORNERS = Array.from({ length: 6 }, (_, i) => ({ x: Math.cos(i * Math.PI / 3), y: Math.sin(i * Math.PI / 3) }));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const STATIONS = new Set(['workbench', 'helpdesk', 'spa']);
+const count = value => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 
 function random(seed) {
   let n = seed >>> 0;
@@ -58,6 +60,8 @@ export class IslandRenderer {
     this.hover = null;
     this.decorations = new Map();
     this.workbenchState = { available: 0, inProgress: 0, total: 0 };
+    this.helpdeskState = { open: 0, resolved: 0, total: 0 };
+    this.spaState = { relaxing: 0, sleeping: 0, total: 0 };
     this.listeners = [];
     this.pointers = new Map();
     this.dirty = true;
@@ -107,8 +111,17 @@ export class IslandRenderer {
   setMotion(enabled) { this.motion = enabled; this.invalidate(); }
 
   setWorkbenchState(state = {}) {
-    const count = value => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
     this.workbenchState = { available: count(state.available), inProgress: count(state.inProgress), total: count(state.total) };
+    this.invalidate();
+  }
+
+  setHelpdeskState(state = {}) {
+    this.helpdeskState = { open: count(state.open), resolved: count(state.resolved), total: count(state.total) };
+    this.invalidate();
+  }
+
+  setSpaState(state = {}) {
+    this.spaState = { relaxing: count(state.relaxing), sleeping: count(state.sleeping), total: count(state.total) };
     this.invalidate();
   }
 
@@ -259,10 +272,10 @@ export class IslandRenderer {
     // visually overlaps a hexagon behind it. Painting still targets the land.
     if (this.tool === 'explore') {
       for (const tile of tiles) {
-        if (tile.station !== 'workbench') continue;
-        const badge = this.workbenchBadge(tile);
+        if (!STATIONS.has(tile.station)) continue;
+        const badge = this.stationBadge(tile);
         const overBadge = point.x >= badge.x && point.x <= badge.x + badge.width && point.y >= badge.y && point.y <= badge.y + badge.height;
-        if (overBadge || inside(point.x, point.y, this.workbenchHitPolygon(tile))) return { key: `${tile.q},${tile.r}`, tile, frontier: false };
+        if (overBadge || inside(point.x, point.y, this.stationHitPolygon(tile))) return { key: `${tile.q},${tile.r}`, tile, frontier: false };
       }
     }
     for (const tile of tiles) if (inside(point.x, point.y, this.tilePoints(tile))) return { key: `${tile.q},${tile.r}`, tile, frontier: false };
@@ -275,7 +288,7 @@ export class IslandRenderer {
   makeDecorations(tile) {
     const rng = random(tile.seed);
     const decorations = [];
-    if (tile.station === 'workbench') {
+    if (STATIONS.has(tile.station)) {
       // Keep the desk and its approach clear, including after terrain painting.
       for (const p of [{ x: -.76, y: .1 }, { x: -.63, y: .53 }, { x: .73, y: .05 }, { x: .59, y: .57 }]) {
         decorations.push({ type: 'grass', ...p, scale: .65 + rng() * .25, color: rng() });
@@ -335,9 +348,10 @@ export class IslandRenderer {
       const center = axialToWorld(tile.q, tile.r);
       const data = this.decorations.get(`${tile.q},${tile.r}`);
       for (const item of data?.decorations || []) objects.push({ ...item, x: item.x + center.x, y: item.y + center.y });
-      if (tile.station === 'workbench') {
-        this.drawWorkbenchGround(tile);
-        objects.push({ type: 'workbench', x: center.x, y: center.y + .24, tile });
+      if (STATIONS.has(tile.station)) {
+        if (tile.station === 'workbench') this.drawWorkbenchGround(tile);
+        else this.drawStationGround(tile);
+        objects.push({ type: tile.station, x: center.x, y: center.y + .24, tile });
       }
     }
     // Shadows sit on the land plane. Objects are painted from back to front.
@@ -347,7 +361,7 @@ export class IslandRenderer {
     if (this.hover && !this.hover.frontier) {
       polygon(ctx, this.tilePoints(this.hover.tile, 0.975), 'rgba(255,255,224,.07)', '#f6ffe0', 2 * this._zoom);
     }
-    for (const tile of tiles) if (tile.station === 'workbench') this.drawWorkbenchBadge(tile);
+    for (const tile of tiles) if (STATIONS.has(tile.station)) this.drawStationBadge(tile);
     this.drawButterflies(time);
     this.drawPollen(time);
     if (this.time === 'sunset') {
@@ -502,6 +516,8 @@ export class IslandRenderer {
 
   drawObject(obj, time) {
     if (obj.type === 'workbench') { this.drawWorkbench(obj.tile); return; }
+    if (obj.type === 'helpdesk') { this.drawHelpdesk(obj.tile); return; }
+    if (obj.type === 'spa') { this.drawSpa(obj.tile, time); return; }
     const ctx = this.ctx, p = this.project(obj.x, obj.y), s = this.baseSize * this._zoom;
     ctx.save(); ctx.translate(p.x, p.y);
     if (obj.type === 'tree') {
@@ -536,15 +552,27 @@ export class IslandRenderer {
   }
 
   workbenchHitPolygon(tile) {
+    return this.stationHitPolygon(tile);
+  }
+
+  stationHitPolygon(tile) {
     const center = axialToWorld(tile.q, tile.r);
+    if (tile.station === 'spa') {
+      return [[-.85, -.45, .22], [.2, -.65, 1.02], [.9, -.25, .99], [.9, .15, .2], [.65, .75, 0], [-.75, .65, 0]]
+        .map(([x, y, z]) => this.project(center.x + x, center.y + y, z));
+    }
     return [[-.76, -.5, 1.36], [.76, -.5, 1.36], [.76, .18, 1.05], [.66, .47, 0], [-.66, .47, 0], [-.76, .18, 1.05]]
       .map(([x, y, z]) => this.project(center.x + x, center.y + y, z));
   }
 
   workbenchBadge(tile) {
+    return this.stationBadge(tile);
+  }
+
+  stationBadge(tile) {
     const center = axialToWorld(tile.q, tile.r), s = this.baseSize * this._zoom;
-    const p = this.project(center.x, center.y - .12, 1.65);
-    const scale = clamp(s / 72, .62, 1.25), width = 112 * scale, height = 25 * scale;
+    const p = this.project(center.x, center.y - .12, tile.station === 'spa' ? 1.37 : 1.65);
+    const scale = clamp(s / 72, .62, 1.25), width = (tile.station === 'workbench' ? 112 : 102) * scale, height = 25 * scale;
     return { x: p.x - width / 2, y: p.y - height / 2, width, height, scale };
   }
 
@@ -667,7 +695,192 @@ export class IslandRenderer {
     ellipse(ctx,-.05,-.27,.065,.025,'#86a968');ellipse(ctx,.045,-.32,.065,.026,'#a3bf7c');ctx.restore();
   }
 
+  stationPainter(tile) {
+    const ctx = this.ctx, center = axialToWorld(tile.q, tile.r), s = this.baseSize * this._zoom;
+    const p = (x, y, z = 0) => this.project(center.x + x, center.y + y, z);
+    const face = (points, fill, stroke) => polygon(ctx, points.map(point => p(...point)), fill, stroke, .7 * this._zoom);
+    const box = (x1, x2, y1, y2, z1, z2, top, front, side) => {
+      face([[x1,y1,z2],[x2,y1,z2],[x2,y2,z2],[x1,y2,z2]],top);
+      face([[x1,y2,z2],[x2,y2,z2],[x2,y2,z1],[x1,y2,z1]],front);
+      face([[x2,y1,z2],[x2,y2,z2],[x2,y2,z1],[x2,y1,z1]],side);
+    };
+    const line = (a, b, color, width = .012) => {
+      const start = p(...a), end = p(...b);
+      ctx.beginPath();ctx.moveTo(start.x,start.y);ctx.lineTo(end.x,end.y);
+      ctx.strokeStyle=color;ctx.lineWidth=Math.max(.5,s*width);ctx.stroke();
+    };
+    return { ctx, p, s, face, box, line };
+  }
+
+  drawStationGround(tile) {
+    const { ctx, p, s, face } = this.stationPainter(tile);
+    const spa = tile.station === 'spa';
+    face([[-.75,-.35,0],[.63,-.38,0],[.86,.13,0],[.54,.68,0],[-.5,.68,0],[-.85,.16,0]], spa ? '#d0ccac' : 'rgba(224,209,172,.63)');
+    const shadow=p(.12,.14);
+    ctx.save();ctx.filter=`blur(${Math.max(1.5,s*.025)}px)`;
+    ellipse(ctx,shadow.x+s*.08,shadow.y+s*.03,s*.73,s*.22,'rgba(62,81,63,.17)');ctx.restore();
+    if (spa) {
+      // Slatted cedar decking gives the hot spring a warm, dry edge.
+      face([[-.7,-.4,.015],[.65,-.4,.015],[.84,.16,.015],[.53,.67,.015],[-.48,.67,.015],[-.8,.17,.015]], '#c3ad82');
+      for (let i=0;i<7;i++) {
+        const y=-.3+i*.14;
+        const a=p(-.62,y,.02),b=p(.63,y,.02);
+        ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.strokeStyle='rgba(140,110,73,.2)';ctx.lineWidth=Math.max(.5,s*.008);ctx.stroke();
+      }
+    } else {
+      for (const [x,y] of [[0,.65],[.02,.48],[-.01,.29]]) {
+        const stone=p(x,y,.01);ellipse(ctx,stone.x,stone.y,s*.12,s*.044,'#bfc8b5');
+        ellipse(ctx,stone.x-s*.01,stone.y-s*.01,s*.105,s*.031,'#dbe0ca');
+      }
+    }
+    const sign=p(-.58,.56,.02);
+    ctx.save();ctx.translate(sign.x,sign.y);ctx.scale(s,s);
+    ctx.fillStyle=spa?'#9b8f9d':'#6c9297';ctx.beginPath();ctx.roundRect(-.13,-.065,.26,.13,.025);ctx.fill();
+    ctx.fillStyle=spa?'#ece3e9':'#e6eee1';
+    ctx.font=`700 ${.085}px Trebuchet MS, sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(String(tile.number || '').padStart(2,'0'),0,0);ctx.restore();
+  }
+
+  drawHelpdesk(tile) {
+    const { ctx, p, s, face, box, line } = this.stationPainter(tile);
+    // A blue canvas service kiosk; the broad frame feels cut from wooden toys.
+    for (const x of [-.56,.48]) box(x,x+.075,-.25,-.16,0,1.25,'#cca572','#b68d59','#947043');
+    box(-.6,.61,-.28,-.14,.53,1.11,'#cda776','#ba935f','#947243');
+    face([[-.52,-.13,.62],[.53,-.13,.62],[.53,-.13,1.04],[-.52,-.13,1.04]],'#e9ead3');
+    face([[-.47,-.115,.66],[-.1,-.115,.66],[-.1,-.115,.98],[-.47,-.115,.98]],'#d3dfd4');
+    for (let i=0;i<3;i++) line([-.41,-.105,.91-i*.07],[-.17+(i%2)*.06,-.105,.91-i*.07],'#9ab6ad',.013);
+    const question=p(.22,-.105,.84);
+    ctx.save();ctx.fillStyle='#638f96';ctx.font=`700 ${s*.31}px Georgia,serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('?',question.x,question.y);ctx.restore();
+
+    for (let i=0;i<6;i++) {
+      const x=-.73+i*.245;
+      face([[x,-.46,1.32],[x+.245,-.46,1.32],[x+.245,.12,1.18],[x,.12,1.18]],i%2?'#c8dbd3':'#739da3');
+      face([[x,.12,1.18],[x+.245,.12,1.18],[x+.245,.12,1.08],[x,.12,1.08]],i%2?'#b5cbc4':'#5d8890');
+      const a=p(x,.12,1.08),b=p(x+.245,.12,1.08);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.quadraticCurveTo((a.x+b.x)/2,a.y+s*.045,b.x,b.y);ctx.closePath();ctx.fillStyle=i%2?'#b5cbc4':'#5d8890';ctx.fill();
+    }
+    line([-.73,-.46,1.32],[.74,-.46,1.32],'#e4e8cf',.018);
+    face([[-.21,.14,1.19],[.21,.14,1.19],[.21,.14,1.06],[-.21,.14,1.06]],'#f0e4c6');
+    const label=p(0,.15,1.12);
+    ctx.save();ctx.fillStyle='#5b8083';ctx.font=`700 ${Math.max(4.5,s*.075)}px Trebuchet MS,sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('H E L P',label.x,label.y);ctx.restore();
+
+    box(-.58,.59,-.02,.45,.05,.46,'#d9bd8c','#bc9b6c','#9c7d55');
+    face([[-.5,.457,.12],[.51,.457,.12],[.51,.457,.36],[-.5,.457,.36]],'#cba775');
+    line([-.48,.46,.34],[.48,.46,.34],'#e4c99c',.012);
+    for (let i=0;i<4;i++) line([-.39+i*.25,.46,.13],[-.39+i*.25,.46,.32],'rgba(140,105,65,.23)',.01);
+    box(-.68,.68,-.08,.51,.45,.51,'#e5cca1','#c5a575','#a88a5e');
+    line([-.66,.51,.515],[.67,.51,.515],'#f0deb7',.015);
+    // Three well-thumbed guides and a fresh message on the countertop.
+    box(-.48,-.17,.06,.31,.515,.56,'#dbc28b','#c6a66d','#a98b57');
+    box(-.49,-.16,.05,.32,.56,.595,'#7ea0a1','#67898b','#57777a');
+    box(-.46,-.14,.065,.30,.595,.63,'#e7c1a7','#c99d7d','#ae8265');
+    face([[-.04,.05,.515],[.18,.08,.515],[.15,.31,.515],[-.07,.28,.515]],'#fff4d5');
+    for (let i=0;i<2;i++) line([-.005,.13+i*.06,.519],[.11,.14+i*.06,.519],'#c5c3a3',.009);
+    const bell=p(.39,.24,.53);
+    ctx.save();ctx.translate(bell.x,bell.y);ctx.scale(s,s);
+    ellipse(ctx,0,.005,.10,.028,'#a78658');
+    ctx.beginPath();ctx.arc(0,-.035,.075,Math.PI,0);ctx.lineTo(.075,.003);ctx.lineTo(-.075,.003);ctx.closePath();ctx.fillStyle='#d8bb7d';ctx.fill();
+    ellipse(ctx,-.016,-.045,.045,.033,'#e9d29a');
+    ctx.fillStyle='#ad8b57';ctx.fillRect(-.012,-.126,.024,.035);ellipse(ctx,0,-.128,.033,.012,'#dcc58e');ctx.restore();
+    // A waiting stool and a small blue message box.
+    for (const x of [-.60,-.38]) box(x,x+.035,.57,.63,0,.20,'#c29c67','#a47d4d','#8d6841');
+    box(-.66,-.30,.51,.72,.18,.24,'#d4b784','#b59360','#987746');
+    box(.49,.75,-.29,-.02,.03,.31,'#8baeb0','#709599','#5b7c82');
+    line([.54,-.014,.26],[.70,-.014,.26],'#d5dfca',.022);
+  }
+
+  drawSpa(tile, time) {
+    const { ctx, p, s, face, box, line } = this.stationPainter(tile);
+    // A tiny lavender parasol shelters the cedar deck and a folded-towel bench.
+    line([.48,-.25,.03],[.48,-.25,1.06],'#a0886a',.027);
+    const canopy=Array.from({length:8},(_,i)=>[.48+Math.cos(i*TAU/8)*.47,-.25+Math.sin(i*TAU/8)*.47,1.02]);
+    for(let i=0;i<8;i++) {
+      face([[.48,-.25,1.18],canopy[i],canopy[(i+1)%8]],['#c4b4ca','#dcd0db','#ac9db8','#c4b4ca'][i%4]);
+    }
+    const tip=p(.48,-.25,1.20);ellipse(ctx,tip.x,tip.y,s*.025,s*.025,'#e8dfe1');
+    for(let i=0;i<8;i++) {
+      const a=canopy[i],b=canopy[(i+1)%8];
+      line(a,b,i<4?'#a89ab2':'#c6bacb',.018);
+    }
+    // Bamboo leaves tuck behind the spring, away from the walking approach.
+    for(const [x,y,h] of [[-.64,-.31,.55],[-.54,-.43,.69],[-.73,-.25,.39]]) {
+      line([x,y,.06],[x,y,h],'#7b9a66',.023);
+      for(let j=0;j<3;j++) {
+        const leaf=p(x+(j%2?-.06:.06),y,h-.11-j*.13);
+        ctx.save();ctx.translate(leaf.x,leaf.y);ctx.rotate(j%2?.3:-.35);ellipse(ctx,0,0,s*.105,s*.029,j%2?'#91b07b':'#b1c696');ctx.restore();
+      }
+    }
+    const centerX=-.12,centerY=.10,outer=.61,inner=.47;
+    const base=p(centerX,centerY,.015),top=p(centerX,centerY,.15);
+    ellipse(ctx,base.x,base.y,s*outer,s*outer*TILT,'#b4b9a4');
+    ellipse(ctx,top.x,top.y,s*outer,s*outer*TILT,'#e1dfc8');
+    // Individual rounded stone facets form the hot spring's hand-built rim.
+    for(let i=0;i<14;i++) {
+      const a=i*TAU/14+.016,b=(i+1)*TAU/14-.016;
+      const at=(angle,r,z)=>[centerX+Math.cos(angle)*r,centerY+Math.sin(angle)*r,z];
+      if(i<7) face([at(a,outer,.15),at(b,outer,.15),at(b,outer,.015),at(a,outer,.015)],i%2?'#bcc1ab':'#abb6a2');
+      face([at(a,outer,.15),at(b,outer,.15),at(b,inner,.15),at(a,inner,.15)],['#dedfca','#eae6cd','#ced4bc'][i%3]);
+    }
+    const water=p(centerX,centerY,.125);
+    const gradient=ctx.createLinearGradient(water.x,water.y-s*.2,water.x,water.y+s*.25);
+    gradient.addColorStop(0,'#77b6ac');gradient.addColorStop(.65,'#9bcebd');gradient.addColorStop(1,'#b6dcc8');
+    ellipse(ctx,water.x,water.y,s*inner,s*inner*TILT,gradient);
+    ctx.save();ctx.beginPath();ctx.ellipse(water.x,water.y,s*inner,s*inner*TILT,0,0,TAU);ctx.clip();
+    for(let i=0;i<3;i++) {
+      const ripple=(.24+i*.17+Math.sin(time*.85+i)*.018);
+      ctx.beginPath();ctx.ellipse(water.x+s*.025,water.y+s*.018,s*ripple,s*ripple*TILT*.64,0,0,TAU);
+      ctx.strokeStyle=i===1?'rgba(236,250,225,.53)':'rgba(214,239,216,.40)';ctx.lineWidth=Math.max(.6,s*.012);ctx.stroke();
+    }
+    ctx.restore();
+    // A small lounger with a pillow, and a neat stack of soft cotton towels.
+    box(.49,.70,.12,.52,.03,.10,'#bcaa83','#a38c64','#8b7657');
+    face([[.50,.16,.11],[.69,.16,.11],[.69,.48,.11],[.50,.48,.11]],'#ded9bd');
+    face([[.50,.14,.11],[.69,.14,.11],[.69,.04,.26],[.50,.04,.26]],'#e8dfc5');
+    line([.50,.34,.118],[.69,.34,.118],'#c6c9ab',.025);
+    box(.52,.67,.055,.13,.27,.31,'#f9f0d8','#e4d7bb','#c9bda4');
+    box(-.63,-.29,-.57,-.32,.02,.13,'#c9ad80','#a98c62','#8b714f');
+    box(-.59,-.34,-.54,-.36,.14,.19,'#e6dfe4','#cfc1d2','#b6a7bd');
+    box(-.59,-.34,-.54,-.36,.19,.225,'#fff5dc','#e6dcc2','#cfc3aa');
+    line([-.55,-.35,.21],[-.39,-.35,.21],'#bca8c0',.01);
+    // Steam freezes with the breeze toggle and stays delicate in evening light.
+    ctx.save();ctx.lineCap='round';
+    for(let i=0;i<3;i++) {
+      const origin=p(centerX-.21+i*.20,centerY-.02,.17);
+      const drift=Math.sin(time*.9+i*1.8)*s*.025;
+      ctx.beginPath();ctx.moveTo(origin.x,origin.y-s*.04);
+      ctx.bezierCurveTo(origin.x+s*.05,origin.y-s*.15,origin.x-s*.045+drift,origin.y-s*.21,origin.x+drift,origin.y-s*.34);
+      ctx.strokeStyle=this.time==='sunset'?'rgba(255,244,222,.45)':'rgba(255,255,237,.47)';ctx.lineWidth=Math.max(.8,s*.022);ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  drawOtherStationBadge(tile) {
+    const ctx=this.ctx,badge=this.stationBadge(tile),scale=badge.scale,spa=tile.station==='spa';
+    const active=this.hover?.tile?.station===tile.station;
+    const number=spa?this.spaState.relaxing+this.spaState.sleeping:this.helpdeskState.open;
+    ctx.save();ctx.translate(badge.x,badge.y);ctx.scale(scale,scale);
+    ctx.shadowColor='rgba(49,76,65,.11)';ctx.shadowBlur=10;ctx.shadowOffsetY=3;
+    ctx.fillStyle=active?'#fffdf0':'#fbf9ed';ctx.beginPath();ctx.roundRect(0,0,102,25,12.5);ctx.fill();
+    ctx.shadowColor='transparent';ctx.strokeStyle=spa?(active?'#ad99ba':'#d8ccdc'):(active?'#8eafb0':'#c5d6cf');ctx.lineWidth=1;ctx.stroke();
+    if(spa) {
+      ctx.strokeStyle='#a294af';ctx.lineWidth=1.1;
+      ctx.beginPath();ctx.ellipse(15,15,6,3,0,0,Math.PI);ctx.moveTo(10,15);ctx.lineTo(20,15);ctx.stroke();
+      for(let i=0;i<2;i++) {ctx.beginPath();ctx.moveTo(13+i*4,11);ctx.bezierCurveTo(10+i*4,8,16+i*4,7,13+i*4,5);ctx.stroke();}
+    } else {
+      ellipse(ctx,15,12.5,7,7,'#e0e9df');ctx.fillStyle='#6d9498';ctx.font='700 12px Georgia,serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('?',15,13);
+    }
+    ctx.fillStyle=spa?'#8d7c96':'#5f8588';ctx.font='700 8px Trebuchet MS,sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(spa?'THE SPA':'HELPDESK',27,13);
+    ellipse(ctx,88,12.5,9,9,spa?'#e9dfeb':number?'#c6ddd8':'#e4ebe0');
+    ctx.fillStyle=spa?'#9b85a4':'#6b8c83';ctx.font='700 9px Trebuchet MS,sans-serif';ctx.textAlign='center';ctx.fillText(number>99?'99+':String(number),88,13);
+    ctx.restore();
+  }
+
   drawWorkbenchBadge(tile) {
+    this.drawStationBadge(tile);
+  }
+
+  drawStationBadge(tile) {
+    if (tile.station !== 'workbench') { this.drawOtherStationBadge(tile); return; }
     const ctx=this.ctx,badge=this.workbenchBadge(tile),scale=badge.scale;
     const active=this.hover?.tile?.station==='workbench', available=this.workbenchState.available;
     ctx.save();ctx.translate(badge.x,badge.y);ctx.scale(scale,scale);

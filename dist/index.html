@@ -25,6 +25,8 @@
       <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 5 3 10l5 5M3 10h11a6 6 0 0 1 0 12"/></symbol>
       <symbol id="i-workbench" viewBox="0 0 24 24"><path d="M3 12h18v4H3zM5 16v6m14-6v6M5 12V3h14v9M8 6h4M8 9h7M7 19h10"/></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+      <symbol id="i-helpdesk" viewBox="0 0 24 24"><path d="M3 10a9 9 0 0 1 18 0v6a3 3 0 0 1-3 3h-3M3 10h3v7H3zM18 10h3v7h-3zM10 20h5M9.5 7.5a2.5 2.5 0 0 1 5 .5c0 2-2.5 2-2.5 4m0 3h.01"/></symbol>
+      <symbol id="i-spa" viewBox="0 0 24 24"><path d="M3 13c0 6 4 8 9 8s9-2 9-8M2 13h20M7 10c-3-3 3-3 0-6m5 6c-3-3 3-3 0-6m5 6c-3-3 3-3 0-6"/></symbol>
     </defs>
   </svg>
 
@@ -48,13 +50,17 @@
       <h1>Little<br>beginnings.</h1>
       <p>A patch of green.<br>A breath of fresh air.<br>A world to make your own.</p>
       <div class="island-stat"><span id="tile-count">23</span><span>little hexagons<br>and room to grow</span></div>
-      <button id="open-workbench" class="station-link" aria-haspopup="dialog" aria-controls="workbench-panel"><svg><use href="#i-workbench"/></svg><span>Workbench <small>HEX 01 · START</small></span><span id="station-job-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+      <nav class="station-nav" aria-label="Island stations">
+        <button id="open-workbench" class="station-link" aria-haspopup="dialog" aria-controls="workbench-panel"><svg><use href="#i-workbench"/></svg><span>Workbench <small>HEX 01 · START</small></span><span id="station-job-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+        <button id="open-helpdesk" class="station-link helpdesk-link" aria-haspopup="dialog" aria-controls="helpdesk-panel"><svg><use href="#i-helpdesk"/></svg><span>Helpdesk <small>A LITTLE SUPPORT</small></span><span id="helpdesk-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+        <button id="open-spa" class="station-link spa-link" aria-haspopup="dialog" aria-controls="spa-panel"><svg><use href="#i-spa"/></svg><span>Spa <small>REST & RECHARGE</small></span><span id="spa-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+      </nav>
     </aside>
 
     <section id="help-panel" class="help-panel" aria-label="Island controls" hidden>
       <div class="panel-heading"><strong>Make yourself at home</strong><button id="close-help" class="text-button" aria-label="Close controls">×</button></div>
       <p>Drag the water to wander. Scroll or pinch to get a little closer.</p>
-      <dl><div><dt>1 · Wander</dt><dd>Look around. Tap the workbench on Hex 01 to open its job board.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
+      <dl><div><dt>1 · Wander</dt><dd>Tap any station to visit: the workbench for jobs, helpdesk for questions, or spa for a break.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
       <p class="help-note">A visual first step for AgentIsland. Changes stay for this visit.</p>
     </section>
 
@@ -113,6 +119,43 @@
       <details id="pickup-preview" class="pickup-preview"><summary><span class="preview-spark" aria-hidden="true">✧</span> Try an agent pickup <span class="preview-tag">PREVIEW</span></summary><div class="pickup-preview-content"><p>A preview agent lets you try claiming and finishing a job. It does not run AI work.</p><div class="preview-agent"><span class="preview-avatar" aria-hidden="true">P</span><div><strong>Preview agent</strong><span id="preview-agent-status">Ready to try a job</span></div><button id="enable-preview" class="secondary-button">Enable</button></div></div></details>
       <p id="board-feedback" class="board-feedback" role="status" aria-live="polite"></p>
       <div class="board-footer"><span class="local-indicator"></span><span id="storage-status">Saved in this browser. Real agents are not connected yet.</span></div>
+    </dialog>
+    <dialog id="helpdesk-panel" class="workbench-panel helpdesk-panel" aria-labelledby="helpdesk-title" aria-describedby="helpdesk-description">
+      <div class="workbench-topline"><span class="station-eyebrow">THE HELPDESK <i></i> A LITTLE SUPPORT</span><button id="close-helpdesk" class="round-button" aria-label="Close helpdesk">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem helpdesk-emblem"><svg><use href="#i-helpdesk"/></svg></span><div><h2 id="helpdesk-title">A helping hand</h2><p id="helpdesk-description">Nobody has to figure it out alone.</p></div></div>
+      <div class="board-overview"><span><i></i><strong id="open-help-count">0</strong> open questions</span><span><strong id="resolved-help-count">0</strong> resolved</span><button id="new-help-button" class="primary-button"><span aria-hidden="true">+</span> Ask for help</button></div>
+      <form id="help-form" class="job-form" hidden>
+        <div class="form-title"><h3>What are you wondering?</h3><button id="cancel-help" class="text-button" type="button" aria-label="Cancel question">×</button></div>
+        <label for="help-title">A question for the island</label><input id="help-title" maxlength="120" required autocomplete="off" placeholder="What could you use a hand with?">
+        <label for="help-details">A little context <span>(optional)</span></label><textarea id="help-details" maxlength="2000" rows="3" placeholder="Share what you know and where you got stuck."></textarea>
+        <div class="help-form-bottom"><button class="primary-button" type="submit">Leave a question <span aria-hidden="true">↗</span></button></div>
+      </form>
+      <div class="job-tabs" role="group" aria-label="Filter help requests"><button class="job-tab active" data-help-filter="open" aria-pressed="true">Open questions <span id="help-tab-open">0</span></button><button class="job-tab" data-help-filter="resolved" aria-pressed="false">Resolved <span id="help-tab-resolved">0</span></button></div>
+      <div id="help-list" class="jobs-list" aria-live="polite"></div>
+      <p id="help-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+    </dialog>
+
+    <dialog id="spa-panel" class="workbench-panel spa-panel" aria-labelledby="spa-title" aria-describedby="spa-description">
+      <div class="workbench-topline"><span class="station-eyebrow">THE LITTLE SPA <i></i> NO RUSH HERE</span><button id="close-spa" class="round-button" aria-label="Close spa">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem spa-emblem"><svg><use href="#i-spa"/></svg></span><div><h2 id="spa-title">A softer pace</h2><p id="spa-description">A place to rest between little adventures.</p></div></div>
+      <div id="spa-scene" class="spa-scene" aria-hidden="true">
+        <div class="spa-sun"></div><span class="spa-spark spark-one">✧</span><span class="spa-spark spark-two">✧</span>
+        <div class="spa-stones"><div class="spa-water"><span></span><span></span><span></span></div></div>
+        <div class="spa-towel"></div><div class="spa-plant"><i></i><i></i><i></i></div>
+        <div class="spa-steam steam-one">∿</div><div class="spa-steam steam-two">∿</div><div class="spa-steam steam-three">∿</div>
+        <span id="spa-scene-caption" class="spa-scene-caption">Somewhere to just be.</span>
+      </div>
+      <div class="spa-counts"><span><strong id="spa-relaxing-count">0</strong> relaxing</span><span><strong id="spa-sleeping-count">0</strong> sleeping</span><span class="preview-tag">PREVIEW VISIT</span></div>
+      <section class="spa-guest" aria-label="Preview agent spa visit">
+        <div class="preview-agent"><span class="preview-avatar" aria-hidden="true">P</span><div><strong>Preview agent</strong><span id="spa-agent-status">A quiet corner is waiting</span></div><span id="spa-status-badge" class="spa-status-badge">Not visiting</span></div>
+        <p id="spa-visit-description">Try a visit with the same preview agent used at the workbench.</p>
+        <button id="spa-enable-preview" class="primary-button">Invite the preview agent <span aria-hidden="true">↗</span></button>
+        <div id="spa-actions" class="spa-actions" hidden><button id="spa-relax" class="spa-action"><svg><use href="#i-spa"/></svg><span>Relax</span><small>Take a breather</small></button><button id="spa-sleep" class="spa-action"><svg><use href="#i-moon"/></svg><span>Sleep</span><small>A little shut-eye</small></button><button id="spa-wake" class="spa-action"><svg><use href="#i-sun"/></svg><span>Wake up</span><small>Ready for more</small></button></div>
+        <button id="spa-visit-workbench" class="spa-workbench-link" hidden>Visit the workbench <span aria-hidden="true">↗</span></button>
+      </section>
+      <p id="spa-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser. Real agents are not connected yet.</span></div>
     </dialog>
     <noscript><div class="no-script">This little island needs JavaScript. Enable it to explore the world.</div></noscript>
   </main>

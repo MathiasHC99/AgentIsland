@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createJobBoard, registerAgent, postJob, claimJob, completeJob,
   releaseJob, summarizeJobs, serializeJobBoard, restoreJobBoard,
+  setAgentRest, wakeAgent, postHelpRequest, resolveHelpRequest, summarizeHelpdesk,
 } from '../dist/jobs.js';
 
 function fixture() {
@@ -135,4 +136,100 @@ test('corrupt storage rejects malformed schemas, duplicate IDs, and inconsistent
   for (const input of [null, undefined, '', 'invalid JSON', '{}', '[]', '{"version":1,"jobs":null,"agents":[]}']) {
     assert.deepEqual(restoreJobBoard(input), createJobBoard());
   }
+});
+
+test('spa rest blocks pickup and cannot interrupt an existing job', () => {
+  const { board, alice, first } = fixture();
+  assert.equal(setAgentRest(board, alice.id, 'relaxing').ok, true);
+  assert.equal(alice.status, 'relaxing');
+  assert.equal(alice.jobId, null);
+  assert.equal(claimJob(board, first.id, alice.id).reason, 'agent_resting');
+  assert.equal(first.status, 'available');
+  assert.equal(setAgentRest(board, alice.id, 'sleeping').ok, true);
+  assert.equal(alice.status, 'sleeping');
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
+  assert.equal(wakeAgent(board, alice.id).ok, true);
+  assert.equal(alice.status, 'idle');
+  assert.equal(claimJob(board, first.id, alice.id).ok, true);
+  const before = structuredClone(board);
+  assert.equal(setAgentRest(board, alice.id, 'sleeping').reason, 'agent_busy');
+  assert.equal(wakeAgent(board, alice.id).reason, 'agent_busy');
+  assert.deepEqual(board, before);
+  assert.equal(completeJob(board, first.id, alice.id).ok, true);
+  assert.equal(setAgentRest(board, alice.id).ok, true);
+  assert.equal(alice.status, 'relaxing');
+  assert.equal(setAgentRest(board, 'missing').reason, 'agent_not_found');
+  assert.equal(wakeAgent(board, 'missing').reason, 'agent_not_found');
+  assert.equal(setAgentRest(board, alice.id, 'working').reason, 'invalid_rest_mode');
+});
+
+test('helpdesk posts and resolves questions without inventing replies or changing jobs', () => {
+  const { board } = fixture();
+  const jobsBefore = structuredClone(board.jobs);
+  const first = postHelpRequest(board, { title: '  Where is the library?  ', details: '  I need a reference.  ', author: '  Alice  ' }).request;
+  const second = postHelpRequest(board, { title: 'How do I return a job?' }).request;
+  assert.equal(first.title, 'Where is the library?');
+  assert.equal(first.details, 'I need a reference.');
+  assert.equal(first.author, 'Alice');
+  assert.equal(second.author, 'You');
+  assert.equal(first.status, 'open');
+  assert.equal(first.resolvedAt, null);
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(summarizeHelpdesk(board), { open: 2, resolved: 0, total: 2 });
+  assert.equal(resolveHelpRequest(board, first.id).ok, true);
+  assert.equal(first.status, 'resolved');
+  assert.ok(first.resolvedAt);
+  assert.deepEqual(summarizeHelpdesk(board), { open: 1, resolved: 1, total: 2 });
+  assert.equal(resolveHelpRequest(board, first.id).reason, 'request_resolved');
+  assert.equal(resolveHelpRequest(board, 'missing').reason, 'request_not_found');
+  assert.deepEqual(board.jobs, jobsBefore);
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
+});
+
+test('older saved workbenches migrate without dropping existing jobs or assignments', () => {
+  const { board, alice, first } = fixture();
+  claimJob(board, first.id, alice.id);
+  const legacy = structuredClone(board);
+  delete legacy.helpRequests;
+  const restored = restoreJobBoard(JSON.stringify(legacy));
+  assert.deepEqual(restored.jobs, board.jobs);
+  assert.deepEqual(restored.agents, board.agents);
+  assert.deepEqual(restored.helpRequests, []);
+  assert.equal(postHelpRequest(restored, { title: 'A new question' }).ok, true);
+  assert.equal(restored.jobs[0].status, 'in_progress');
+});
+
+test('invalid questions and inconsistent stored rest/help states are rejected', () => {
+  const { board, alice, first } = fixture();
+  for (const input of [null, {}, { title: '  ' }, { title: 'a'.repeat(121) }, { title: 'Question', details: 'a'.repeat(2001) }, { title: 'Question', author: '' }]) {
+    assert.equal(postHelpRequest(board, input).ok, false);
+  }
+  const question = postHelpRequest(board, { title: 'A question' }).request;
+  const changes = [
+    data => { data.helpRequests = null; },
+    data => { data.helpRequests.push({ ...data.helpRequests[0] }); },
+    data => { data.helpRequests[0].id = first.id; },
+    data => { data.helpRequests[0].resolvedAt = new Date().toISOString(); },
+    data => { data.helpRequests[0].status = 'resolved'; },
+    data => { data.helpRequests[0].title = ''; },
+    data => { data.helpRequests[0].author = 'a'.repeat(61); },
+    data => { data.helpRequests[0].details = null; },
+    data => { data.helpRequests[0].status = 'answered'; },
+    data => { data.agents[0].status = 'sleeping'; data.agents[0].jobId = first.id; },
+  ];
+  for (const change of changes) {
+    const invalid = structuredClone(board);
+    change(invalid);
+    assert.deepEqual(restoreJobBoard(JSON.stringify(invalid)), createJobBoard());
+    assert.throws(() => serializeJobBoard(invalid), TypeError);
+  }
+  resolveHelpRequest(board, question.id);
+  const invalidDate = structuredClone(board);
+  invalidDate.helpRequests[0].resolvedAt = '2000-01-01T00:00:00.000Z';
+  assert.deepEqual(restoreJobBoard(JSON.stringify(invalidDate)), createJobBoard());
+  claimJob(board, first.id, alice.id);
+  const hiddenAssignment = structuredClone(board);
+  hiddenAssignment.agents[0].status = 'relaxing';
+  hiddenAssignment.agents[0].jobId = null;
+  assert.deepEqual(restoreJobBoard(JSON.stringify(hiddenAssignment)), createJobBoard());
 });

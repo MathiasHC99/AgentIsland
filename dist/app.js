@@ -1,6 +1,8 @@
-import { createWorld, addTile, paintTile, summarizeWorld, hexKey } from './world.js';
+import { createWorld, addTile, paintTile, summarizeWorld, hexKey, STATIONS } from './world.js';
 import { IslandRenderer } from './renderer.js';
 import { initWorkbench } from './workbench.js';
+import { createBoardStore } from './board-store.js';
+import { initStations } from './station-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const canvas = $('#island');
@@ -14,6 +16,8 @@ const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let motion = !reducedMotion.matches;
 let announcementTimer;
 let workbench;
+let stations;
+const boardStore = createBoardStore();
 
 function announce(message) {
   const element = $('#announcement');
@@ -31,7 +35,11 @@ function refreshWorld() {
 
 const renderer = new IslandRenderer(canvas, {
   onTileClick(tile) {
-    if (tool === 'explore' && tile.station === 'workbench') { workbench.open(); return; }
+    if (tool === 'explore' && tile.station) {
+      if (tile.station === 'workbench') workbench.open();
+      else stations.open(tile.station);
+      return;
+    }
     if (tool !== 'paint' || tile.terrain === terrain) return;
     const previous = { ...tile };
     if (paintTile(world, tile.q, tile.r, terrain)) {
@@ -50,7 +58,7 @@ const renderer = new IslandRenderer(canvas, {
   },
   onHover(tile) {
     $('#tile-label').hidden = !tile;
-    if (tile) $('#tile-name').textContent = tile.station === 'workbench' ? 'Hex 01 · The workbench · Tap to open' : names[tile.terrain] || 'Room for something new';
+    if (tile) $('#tile-name').textContent = tile.station ? `Hex ${String(tile.number).padStart(2, '0')} · ${STATIONS[tile.station]?.name || 'Station'} · Tap to open` : names[tile.terrain] || 'Room for something new';
   },
   onViewChange(value) {
     const zoom = typeof value === 'number' ? value : value?.zoom ?? renderer.zoom ?? 1;
@@ -58,7 +66,13 @@ const renderer = new IslandRenderer(canvas, {
   },
 });
 
-workbench = initWorkbench({ renderer, onBeforeOpen: () => { showHelp(false); setTool('explore'); } });
+function prepareStation() {
+  document.querySelectorAll('dialog[open]').forEach(panel => panel.close());
+  showHelp(false);
+  setTool('explore');
+}
+workbench = initWorkbench({ renderer, store: boardStore, onBeforeOpen: prepareStation });
+stations = initStations({ renderer, store: boardStore, onBeforeOpen: prepareStation, openWorkbench: () => workbench.open() });
 
 function setTool(next) {
   tool = next;
@@ -105,6 +119,7 @@ $('#time-toggle').addEventListener('click', () => {
 });
 function updateMotion() {
   renderer.setMotion(motion);
+  document.body.classList.toggle('breeze-off', !motion);
   $('#motion-toggle').textContent = motion ? 'Breeze on' : 'Breeze off';
   $('#motion-toggle').setAttribute('aria-pressed', String(motion));
 }
@@ -117,8 +132,9 @@ function showHelp(show) {
 $('#help-button').addEventListener('click', () => showHelp($('#help-panel').hidden));
 $('#close-help').addEventListener('click', () => showHelp(false));
 document.addEventListener('keydown', event => {
-  if ($('#workbench-panel').open) {
-    if (event.key === 'Escape') { event.preventDefault(); $('#workbench-panel').close(); }
+  const openPanel = document.querySelector('dialog[open]');
+  if (openPanel) {
+    if (event.key === 'Escape') { event.preventDefault(); openPanel.close(); }
     return;
   }
   if (event.target.matches('input,textarea,select') || event.altKey) return;
@@ -138,4 +154,4 @@ document.addEventListener('keydown', event => {
 
 refreshWorld();
 updateMotion();
-window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); renderer.destroy(); }, { once: true });
+window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); workbench.destroy(); stations.destroy(); boardStore.destroy(); renderer.destroy(); }, { once: true });

@@ -1,9 +1,7 @@
 import {
-  createJobBoard, registerAgent, postJob, claimJob, completeJob, releaseJob,
-  summarizeJobs, serializeJobBoard, restoreJobBoard,
+  registerAgent, postJob, claimJob, completeJob, releaseJob, summarizeJobs,
 } from './jobs.js';
 
-const STORAGE_KEY = 'agent-island.workbench.v1';
 const PREVIEW_AGENT = 'preview-agent';
 const $ = selector => document.querySelector(selector);
 const element = (tag, className, content) => {
@@ -14,19 +12,11 @@ const element = (tag, className, content) => {
 };
 
 /** Browser-local station UI; job rules remain independent of DOM and rendering. */
-export function initWorkbench({ renderer, onBeforeOpen } = {}) {
-  let board = createJobBoard();
-  let storageAvailable = true;
+export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
+  let board = store.getBoard();
   let filter = 'available';
   let submitting = false;
   const panel = $('#workbench-panel');
-  try { board = restoreJobBoard(localStorage.getItem(STORAGE_KEY)); }
-  catch { storageAvailable = false; }
-
-  function save() {
-    try { localStorage.setItem(STORAGE_KEY, serializeJobBoard(board)); storageAvailable = true; }
-    catch { storageAvailable = false; }
-  }
 
   function feedback(message, error = false) {
     $('#board-feedback').textContent = message;
@@ -35,26 +25,13 @@ export function initWorkbench({ renderer, onBeforeOpen } = {}) {
 
   function setFilter(next) { filter = next; render(); }
 
-  function performMutation(action, successMessage, nextFilter) {
-    if (storageAvailable) {
-      try { board = restoreJobBoard(localStorage.getItem(STORAGE_KEY)); }
-      catch { storageAvailable = false; }
-    }
-    const result = action();
+  async function mutate(action, successMessage, nextFilter) {
+    const result = await store.mutate(current => { board = current; return action(); });
     if (!result.ok) { feedback(result.message, true); render(); return result; }
     if (nextFilter) filter = nextFilter;
-    save();
     render();
     feedback(successMessage);
     return result;
-  }
-
-  function mutate(action, successMessage, nextFilter) {
-    // Tabs of this same local board share a lock; a stale tab cannot double-claim a job.
-    if (navigator.locks?.request) {
-      return navigator.locks.request(STORAGE_KEY, () => performMutation(action, successMessage, nextFilter));
-    }
-    return Promise.resolve(performMutation(action, successMessage, nextFilter));
   }
 
   function renderJob(job, preview) {
@@ -67,11 +44,12 @@ export function initWorkbench({ renderer, onBeforeOpen } = {}) {
     if (job.description) card.append(element('p', 'job-description', job.description));
     const footer = element('div', 'job-card-footer');
     if (job.status === 'available') {
-      footer.append(element('span', 'job-waiting', preview?.status === 'busy' ? 'Preview agent is busy' : 'Ready for an available agent'));
+      const resting = preview && ['relaxing', 'sleeping'].includes(preview.status);
+      footer.append(element('span', 'job-waiting', preview?.status === 'busy' ? 'Preview agent is busy' : resting ? 'Preview agent is resting at the spa' : 'Ready for an available agent'));
       if (preview) {
         const claim = element('button', 'secondary-button claim-job', 'Pick up job');
         claim.disabled = preview.status !== 'idle';
-        if (claim.disabled) claim.title = 'Finish or return the current job first.';
+        if (claim.disabled) claim.title = resting ? 'Wake the preview agent at the spa first.' : 'Finish or return the current job first.';
         claim.addEventListener('click', () => mutate(() => claimJob(board, job.id, preview.id), 'The preview agent picked up this job.', 'in_progress'));
         footer.append(claim);
       }
@@ -95,6 +73,7 @@ export function initWorkbench({ renderer, onBeforeOpen } = {}) {
   }
 
   function render() {
+    board = store.getBoard();
     const counts = summarizeJobs(board);
     const preview = board.agents.find(agent => agent.id === PREVIEW_AGENT);
     $('#available-count').textContent = counts.available;
@@ -110,11 +89,14 @@ export function initWorkbench({ renderer, onBeforeOpen } = {}) {
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     });
-    $('#preview-agent-status').textContent = preview?.status === 'busy' ? 'Busy · one job at a time' : preview ? 'Available · ready to pick up a job' : 'Ready to try a job';
+    $('#preview-agent-status').textContent = {
+      busy: 'Busy · one job at a time', relaxing: 'Relaxing at the spa · wake to pick up work',
+      sleeping: 'Sleeping at the spa · wake to pick up work', idle: 'Available · ready to pick up a job',
+    }[preview?.status] || 'Ready to try a job';
     $('#enable-preview').textContent = preview ? 'Enabled' : 'Enable';
     $('#enable-preview').disabled = !!preview;
-    $('.preview-agent').classList.toggle('is-busy', preview?.status === 'busy');
-    $('#storage-status').textContent = storageAvailable
+    $('#workbench-panel .preview-agent').classList.toggle('is-busy', preview?.status === 'busy');
+    $('#storage-status').textContent = store.storageAvailable
       ? 'Saved in this browser. Real agents are not connected yet.'
       : 'Changes last for this visit; browser storage is unavailable.';
 
@@ -179,12 +161,7 @@ export function initWorkbench({ renderer, onBeforeOpen } = {}) {
   });
   document.querySelectorAll('[data-job-filter]').forEach(button => button.addEventListener('click', () => { feedback(''); setFilter(button.dataset.jobFilter); }));
   $('#enable-preview').addEventListener('click', () => mutate(() => registerAgent(board, { id: PREVIEW_AGENT, name: 'Preview agent' }), 'Preview enabled. Pick up any available job to try the handoff.'));
-  window.addEventListener('storage', event => {
-    if (event.key !== STORAGE_KEY && event.key !== null) return;
-    board = restoreJobBoard(event.newValue);
-    render();
-    if (panel.open) feedback('The board was updated in another tab.');
-  });
+  const unsubscribe = store.subscribe(render);
   render();
-  return { open };
+  return { open, destroy: unsubscribe };
 }

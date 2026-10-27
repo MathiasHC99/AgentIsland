@@ -1,6 +1,11 @@
 /** Small, renderer-independent model of an expandable flat-top hex island. */
 export const TERRAINS = Object.freeze(['meadow', 'grove', 'wildflowers', 'earth']);
 export const START_HEX = Object.freeze({ q: 0, r: 0, number: 1 });
+export const STATIONS = Object.freeze({
+  workbench: Object.freeze({ name: 'Workbench', q: 0, r: 0 }),
+  helpdesk: Object.freeze({ name: 'Helpdesk', q: -2, r: 1 }),
+  spa: Object.freeze({ name: 'Spa', q: 1, r: 1 }),
+});
 
 const DIRECTIONS = Object.freeze([
   [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1],
@@ -77,6 +82,10 @@ export function createWorld(seed = 'agent-island') {
     [-3, 1, 'grove'], [-3, 2, 'meadow'], [0, 3, 'wildflowers'], [2, -3, 'meadow'],
   ]) {
     world.set(hexKey(q, r), { ...makeTile(q, r, terrain, seed), number: world.size + 1 });
+  }
+  for (const [station, position] of Object.entries(STATIONS)) {
+    const key = hexKey(position.q, position.r);
+    world.set(key, { ...world.get(key), station, terrain: 'meadow' });
   }
   return world;
 }

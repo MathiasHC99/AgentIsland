@@ -2,6 +2,8 @@
 export const JOB_PRIORITIES = Object.freeze(['low', 'normal', 'high']);
 export const JOB_STATUSES = Object.freeze(['available', 'in_progress', 'completed']);
 export const JOB_LIMITS = Object.freeze({ title: 120, description: 2000, agentName: 60 });
+export const AGENT_STATUSES = Object.freeze(['idle', 'busy', 'relaxing', 'sleeping']);
+export const HELP_LIMITS = Object.freeze({ title: 120, details: 2000, author: 60 });
 
 let fallbackSequence = 0;
 const now = () => new Date().toISOString();
@@ -12,16 +14,16 @@ const text = (value, maximum, required = true) => typeof value === 'string'
   && value.length <= maximum && (!required || value.trim().length > 0);
 const failure = (reason, message) => ({ ok: false, reason, message });
 
-function uniqueId(board) {
+function uniqueId(board, kind = 'job') {
   let id;
   do {
-    id = `job-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${(++fallbackSequence).toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
-  } while (board.jobs.some(job => job.id === id));
+    id = `${kind}-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${(++fallbackSequence).toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
+  } while (board.jobs.some(job => job.id === id) || board.helpRequests?.some(request => request.id === id));
   return id;
 }
 
 export function createJobBoard() {
-  return { version: 1, jobs: [], agents: [] };
+  return { version: 1, jobs: [], agents: [], helpRequests: [] };
 }
 
 /** Re-registering a stable identity is safe and never resets its current assignment. */
@@ -64,6 +66,9 @@ export function claimJob(board, jobId, agentId) {
   const job = board.jobs.find(item => item.id === jobId);
   if (!job) return failure('job_not_found', 'This job is no longer on the board.');
   if (job.status !== 'available') return failure('job_unavailable', 'Another agent has already picked up this job.');
+  if (agent.status === 'relaxing' || agent.status === 'sleeping') {
+    return failure('agent_resting', 'This agent is taking a break at the spa. Wake it before picking up a job.');
+  }
   if (agent.status !== 'idle' || agent.jobId !== null
       || board.jobs.some(item => item.status === 'in_progress' && item.claimedBy === agentId)) {
     return failure('agent_busy', 'This agent already has a job. Finish or return it before picking up another.');
@@ -121,17 +126,78 @@ export function summarizeJobs(board) {
   };
 }
 
+/** Rest is a real availability state, never a way to abandon an assigned job. */
+export function setAgentRest(board, agentId, mode = 'relaxing') {
+  if (!['relaxing', 'sleeping'].includes(mode)) return failure('invalid_rest_mode', 'Choose relaxing or sleeping.');
+  const agent = board.agents.find(item => item.id === agentId);
+  if (!agent) return failure('agent_not_found', 'This agent is not registered on the island.');
+  if (agent.status === 'busy' || agent.jobId !== null
+      || board.jobs.some(job => job.status === 'in_progress' && job.claimedBy === agentId)) {
+    return failure('agent_busy', 'Finish or return the current job before taking a break.');
+  }
+  agent.status = mode;
+  return { ok: true, agent };
+}
+
+export function wakeAgent(board, agentId) {
+  const agent = board.agents.find(item => item.id === agentId);
+  if (!agent) return failure('agent_not_found', 'This agent is not registered on the island.');
+  if (agent.status === 'busy' || agent.jobId !== null
+      || board.jobs.some(job => job.status === 'in_progress' && job.claimedBy === agentId)) {
+    return failure('agent_busy', 'This agent is working on a job. Finish or return it first.');
+  }
+  agent.status = 'idle';
+  return { ok: true, agent };
+}
+
+export function postHelpRequest(board, input = {}) {
+  if (!record(input) || !text(input.title, HELP_LIMITS.title)
+      || !text(input.details ?? '', HELP_LIMITS.details, false)
+      || !text(input.author ?? 'You', HELP_LIMITS.author)) {
+    return failure('invalid_help_request', 'Use a title of 1–120 characters, details up to 2,000 characters, and a name of 1–60 characters.');
+  }
+  const request = {
+    id: uniqueId(board, 'help'),
+    title: input.title.trim(),
+    details: (input.details ?? '').trim(),
+    author: (input.author ?? 'You').trim(),
+    status: 'open',
+    createdAt: now(),
+    resolvedAt: null,
+  };
+  board.helpRequests.push(request);
+  return { ok: true, request };
+}
+
+export function resolveHelpRequest(board, requestId) {
+  const request = board.helpRequests.find(item => item.id === requestId);
+  if (!request) return failure('request_not_found', 'This question is no longer at the helpdesk.');
+  if (request.status !== 'open') return failure('request_resolved', 'This question has already been resolved.');
+  request.status = 'resolved';
+  request.resolvedAt = now();
+  return { ok: true, request };
+}
+
+export function summarizeHelpdesk(board) {
+  return {
+    open: board.helpRequests.filter(request => request.status === 'open').length,
+    resolved: board.helpRequests.filter(request => request.status === 'resolved').length,
+    total: board.helpRequests.length,
+  };
+}
+
 function validatedBoard(value) {
   if (!record(value) || value.version !== 1 || !Array.isArray(value.jobs) || !Array.isArray(value.agents)) return null;
+  if (value.helpRequests !== undefined && !Array.isArray(value.helpRequests)) return null;
   const board = createJobBoard();
   const agents = new Map();
   const jobs = new Map();
   for (const item of value.agents) {
     if (!record(item) || !identifier(item.id) || agents.has(item.id)
         || !text(item.name, JOB_LIMITS.agentName)
-        || !['idle', 'busy'].includes(item.status)
+        || !AGENT_STATUSES.includes(item.status)
         || !(item.jobId === null || identifier(item.jobId))) return null;
-    if ((item.status === 'idle') !== (item.jobId === null)) return null;
+    if ((item.status !== 'busy') !== (item.jobId === null)) return null;
     const agent = { id: item.id, name: item.name.trim(), status: item.status, jobId: item.jobId };
     agents.set(agent.id, agent);
     board.agents.push(agent);
@@ -173,6 +239,22 @@ function validatedBoard(value) {
     if (agent.status !== 'busy') continue;
     const job = jobs.get(agent.jobId);
     if (!job || job.status !== 'in_progress' || job.claimedBy !== agent.id) return null;
+  }
+  const requestIds = new Set();
+  for (const item of value.helpRequests ?? []) {
+    if (!record(item) || !identifier(item.id) || requestIds.has(item.id) || jobs.has(item.id)
+        || !text(item.title, HELP_LIMITS.title) || !text(item.details, HELP_LIMITS.details, false)
+        || !text(item.author, HELP_LIMITS.author) || !['open', 'resolved'].includes(item.status)
+        || !timestamp(item.createdAt)
+        || !(item.resolvedAt === null || timestamp(item.resolvedAt))) return null;
+    if (item.status === 'open' && item.resolvedAt !== null) return null;
+    if (item.status === 'resolved' && (!timestamp(item.resolvedAt)
+        || Date.parse(item.resolvedAt) < Date.parse(item.createdAt))) return null;
+    requestIds.add(item.id);
+    board.helpRequests.push({
+      id: item.id, title: item.title.trim(), details: item.details.trim(), author: item.author.trim(),
+      status: item.status, createdAt: item.createdAt, resolvedAt: item.resolvedAt,
+    });
   }
   return board;
 }
