@@ -57,6 +57,7 @@ export class IslandRenderer {
     this.center = { x: 0, y: 0 };
     this.hover = null;
     this.decorations = new Map();
+    this.workbenchState = { available: 0, inProgress: 0, total: 0 };
     this.listeners = [];
     this.pointers = new Map();
     this.dirty = true;
@@ -82,7 +83,7 @@ export class IslandRenderer {
     } : { minX: -2, maxX: 2, minY: -2, maxY: 2 };
     this.frontier = frontierTiles(world);
     for (const [key, cached] of this.decorations) {
-      if (!world.has(key) || world.get(key).terrain !== cached.terrain) this.decorations.delete(key);
+      if (!world.has(key) || world.get(key).terrain !== cached.terrain || world.get(key).station !== cached.station) this.decorations.delete(key);
     }
     for (const [key, tile] of world) {
       if (!this.decorations.has(key)) this.decorations.set(key, this.makeDecorations(tile));
@@ -104,6 +105,12 @@ export class IslandRenderer {
   setTerrain(terrain) { this.terrain = terrain; this.invalidate(); }
   setTime(time) { this.time = time; this.invalidate(); }
   setMotion(enabled) { this.motion = enabled; this.invalidate(); }
+
+  setWorkbenchState(state = {}) {
+    const count = value => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+    this.workbenchState = { available: count(state.available), inProgress: count(state.inProgress), total: count(state.total) };
+    this.invalidate();
+  }
 
   panBy(dx, dy) {
     this.pan.x += dx;
@@ -248,6 +255,16 @@ export class IslandRenderer {
 
   pick(point) {
     const tiles = [...this.world.values()].sort((a, b) => axialToWorld(b.q, b.r).y - axialToWorld(a.q, a.r).y);
+    // A raised station belongs to its own ground tile, even where its roof
+    // visually overlaps a hexagon behind it. Painting still targets the land.
+    if (this.tool === 'explore') {
+      for (const tile of tiles) {
+        if (tile.station !== 'workbench') continue;
+        const badge = this.workbenchBadge(tile);
+        const overBadge = point.x >= badge.x && point.x <= badge.x + badge.width && point.y >= badge.y && point.y <= badge.y + badge.height;
+        if (overBadge || inside(point.x, point.y, this.workbenchHitPolygon(tile))) return { key: `${tile.q},${tile.r}`, tile, frontier: false };
+      }
+    }
     for (const tile of tiles) if (inside(point.x, point.y, this.tilePoints(tile))) return { key: `${tile.q},${tile.r}`, tile, frontier: false };
     if (this.tool === 'expand') {
       for (const tile of this.frontier || []) if (inside(point.x, point.y, this.tilePoints(tile, 0.91))) return { key: `f:${tile.q},${tile.r}`, tile, frontier: true };
@@ -258,6 +275,13 @@ export class IslandRenderer {
   makeDecorations(tile) {
     const rng = random(tile.seed);
     const decorations = [];
+    if (tile.station === 'workbench') {
+      // Keep the desk and its approach clear, including after terrain painting.
+      for (const p of [{ x: -.76, y: .1 }, { x: -.63, y: .53 }, { x: .73, y: .05 }, { x: .59, y: .57 }]) {
+        decorations.push({ type: 'grass', ...p, scale: .65 + rng() * .25, color: rng() });
+      }
+      return { terrain: tile.terrain, station: tile.station, decorations, variant: rng(), phase: rng() * TAU };
+    }
     const point = (radius = 0.7) => {
       const a = rng() * TAU, r = Math.sqrt(rng()) * radius;
       return { x: Math.cos(a) * r, y: Math.sin(a) * r };
@@ -271,7 +295,7 @@ export class IslandRenderer {
     for (let i = 0; i < flowers; i++) decorations.push({ type: 'flower', ...point(0.7), scale: 0.7 + rng() * 0.4, color: Math.floor(rng() * 4), phase: rng() * TAU });
     const rocks = tile.terrain === 'earth' ? 4 : rng() > 0.64 ? 1 : 0;
     for (let i = 0; i < rocks; i++) decorations.push({ type: 'rock', ...point(0.63), scale: 0.15 + rng() * 0.16 });
-    return { terrain: tile.terrain, decorations, variant: rng(), phase: rng() * TAU };
+    return { terrain: tile.terrain, station: tile.station, decorations, variant: rng(), phase: rng() * TAU };
   }
 
   invalidate() {
@@ -311,6 +335,10 @@ export class IslandRenderer {
       const center = axialToWorld(tile.q, tile.r);
       const data = this.decorations.get(`${tile.q},${tile.r}`);
       for (const item of data?.decorations || []) objects.push({ ...item, x: item.x + center.x, y: item.y + center.y });
+      if (tile.station === 'workbench') {
+        this.drawWorkbenchGround(tile);
+        objects.push({ type: 'workbench', x: center.x, y: center.y + .24, tile });
+      }
     }
     // Shadows sit on the land plane. Objects are painted from back to front.
     for (const obj of objects) if (obj.type === 'tree') this.drawTreeShadow(obj);
@@ -319,6 +347,7 @@ export class IslandRenderer {
     if (this.hover && !this.hover.frontier) {
       polygon(ctx, this.tilePoints(this.hover.tile, 0.975), 'rgba(255,255,224,.07)', '#f6ffe0', 2 * this._zoom);
     }
+    for (const tile of tiles) if (tile.station === 'workbench') this.drawWorkbenchBadge(tile);
     this.drawButterflies(time);
     this.drawPollen(time);
     if (this.time === 'sunset') {
@@ -472,6 +501,7 @@ export class IslandRenderer {
   }
 
   drawObject(obj, time) {
+    if (obj.type === 'workbench') { this.drawWorkbench(obj.tile); return; }
     const ctx = this.ctx, p = this.project(obj.x, obj.y), s = this.baseSize * this._zoom;
     ctx.save(); ctx.translate(p.x, p.y);
     if (obj.type === 'tree') {
@@ -502,6 +532,155 @@ export class IslandRenderer {
       polygon(ctx, [{ x: -.29, y: -.35 }, { x: -.05, y: -.49 }, { x: .27, y: -.37 }, { x: .07, y: -.19 }, { x: -.26, y: -.16 }], '#c5cbb5');
       polygon(ctx, [{ x: .07, y: -.19 }, { x: .27, y: -.37 }, { x: .4, y: -.09 }, { x: .24, y: .05 }], '#8a9b8c');
     }
+    ctx.restore();
+  }
+
+  workbenchHitPolygon(tile) {
+    const center = axialToWorld(tile.q, tile.r);
+    return [[-.76, -.5, 1.36], [.76, -.5, 1.36], [.76, .18, 1.05], [.66, .47, 0], [-.66, .47, 0], [-.76, .18, 1.05]]
+      .map(([x, y, z]) => this.project(center.x + x, center.y + y, z));
+  }
+
+  workbenchBadge(tile) {
+    const center = axialToWorld(tile.q, tile.r), s = this.baseSize * this._zoom;
+    const p = this.project(center.x, center.y - .12, 1.65);
+    const scale = clamp(s / 72, .62, 1.25), width = 112 * scale, height = 25 * scale;
+    return { x: p.x - width / 2, y: p.y - height / 2, width, height, scale };
+  }
+
+  drawWorkbenchGround(tile) {
+    const ctx = this.ctx, center = axialToWorld(tile.q, tile.r), s = this.baseSize * this._zoom;
+    const p = (x, y, z = 0) => this.project(center.x + x, center.y + y, z);
+    polygon(ctx, [[-.72, -.3], [.57, -.38], [.77, .12], [.51, .65], [-.47, .65], [-.78, .16]].map(([x, y]) => p(x, y)), 'rgba(226,205,151,.48)');
+    // A rounded, sandy approach and three small worn stepping stones.
+    for (const [x, y, w] of [[-.05, .7, .13], [.02, .49, .15], [-.03, .29, .12]]) {
+      const point = p(x, y);
+      ellipse(ctx, point.x, point.y, s * w, s * w * .43, '#e0d7aa');
+      ellipse(ctx, point.x - s * .015, point.y - s * .008, s * w * .87, s * w * .3, '#eee1b9');
+    }
+    const shadow = p(.14, .12);
+    ctx.save();
+    ctx.filter = `blur(${Math.max(1.5, s * .025)}px)`;
+    ellipse(ctx, shadow.x + s * .08, shadow.y + s * .04, s * .75, s * .24, 'rgba(68,83,48,.20)');
+    ctx.restore();
+    // Hexagon 01: the little brass start marker survives every terrain change.
+    const sign = p(-.49, .59, .015);
+    ctx.save(); ctx.translate(sign.x, sign.y);
+    ctx.fillStyle = '#926c45'; ctx.beginPath(); ctx.roundRect(-s * .16, -s * .07, s * .32, s * .15, s * .035); ctx.fill();
+    ctx.fillStyle = '#ebd3a0'; ctx.beginPath(); ctx.roundRect(-s * .145, -s * .065, s * .29, s * .125, s * .025); ctx.fill();
+    ctx.fillStyle = '#735635'; ctx.font = `700 ${Math.max(5, s * .09)}px Trebuchet MS, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('01', 0, 0); ctx.restore();
+  }
+
+  drawWorkbench(tile) {
+    const ctx = this.ctx, center = axialToWorld(tile.q, tile.r), s = this.baseSize * this._zoom;
+    const p = (x, y, z = 0) => this.project(center.x + x, center.y + y, z);
+    const face = (coords, fill, stroke) => polygon(ctx, coords.map(([x, y, z]) => p(x, y, z)), fill, stroke, .8 * this._zoom);
+    const box = (x1, x2, y1, y2, z1, z2, top, front, side) => {
+      face([[x1,y1,z2],[x2,y1,z2],[x2,y2,z2],[x1,y2,z2]], top);
+      face([[x1,y2,z2],[x2,y2,z2],[x2,y2,z1],[x1,y2,z1]], front);
+      face([[x2,y1,z2],[x2,y2,z2],[x2,y2,z1],[x2,y1,z1]], side);
+    };
+    const line = (start, end, color, width = .013) => {
+      const a = p(...start), b = p(...end);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.strokeStyle=color;ctx.lineWidth=Math.max(.5,s*width);ctx.stroke();
+    };
+
+    // Broad timber posts, cork inset, and a slightly oversized toy-like frame.
+    for (const x of [-.57, .50]) box(x, x + .08, -.23, -.13, 0, 1.26, '#c69960', '#a47848', '#835d3b');
+    box(-.63,.64,-.25,-.10,.58,1.18,'#c69b62','#ba8d55','#8f643f');
+    face([[-.54,-.095,.66],[.55,-.095,.66],[.55,-.095,1.10],[-.54,-.095,1.10]], '#b69766');
+    face([[-.52,-.09,.68],[.53,-.09,.68],[.53,-.09,1.09],[-.52,-.09,1.09]], '#d0b17a');
+    // Subtle cork speckles and the occasional nail keep the material tactile.
+    const rng = random(tile.seed + 9417);
+    for (let i = 0; i < 19; i++) {
+      const dot = p(-.5+rng(),-.085,.7+rng()*.36);
+      ellipse(ctx,dot.x,dot.y,s*.006,s*.006,i%2?'rgba(109,76,41,.16)':'rgba(248,222,167,.34)');
+    }
+    for (const x of [-.58,.59]) for (const z of [.63,1.14]) {
+      const nail=p(x,-.085,z);ellipse(ctx,nail.x,nail.y,s*.012,s*.012,'#806348');
+      ellipse(ctx,nail.x-s*.003,nail.y-s*.003,s*.005,s*.005,'#d9bf8b');
+    }
+
+    const note = (x,z,w,h,color,tilt=0) => {
+      face([[x,-.074,z],[x+w,-.074,z+tilt],[x+w,-.074,z+h+tilt],[x,-.074,z+h]],'rgba(95,74,46,.12)');
+      face([[x-.012,-.06,z+.014],[x+w-.012,-.06,z+.014+tilt],[x+w-.012,-.06,z+h+.014+tilt],[x-.012,-.06,z+h+.014]],color);
+      face([[x+w-.07,-.055,z+.014+tilt],[x+w-.012,-.055,z+.014+tilt],[x+w-.012,-.055,z+.07+tilt]],'#e7d5ab');
+      const pin=p(x+w*.5,-.049,z+h-.014+tilt*.5);
+      ellipse(ctx,pin.x+s*.006,pin.y+s*.008,s*.016,s*.016,'rgba(91,68,41,.15)');
+      ellipse(ctx,pin.x,pin.y,s*.015,s*.015,'#bd795b');
+      for (let i=0;i<2;i++) line([x+.03,-.047,z+h-.07-i*.047],[x+w-.045-(i%2)*.03,-.047,z+h-.07-i*.047+tilt],'rgba(111,113,89,.44)',.01);
+    };
+    note(-.43,.74,.24,.27,'#fff4d2',.025);
+    note(-.10,.72,.25,.30,'#e4edcf',-.018);
+    note(.24,.78,.22,.25,'#f3ceb3',.02);
+
+    // A moss-green canvas awning makes this communal station easy to spot.
+    for (let stripe=0;stripe<6;stripe++) {
+      const x1=-.75+stripe*.25,x2=x1+.25;
+      face([[x1,-.47,1.34],[x2,-.47,1.34],[x2,.13,1.19],[x1,.13,1.19]],stripe%2?'#b8c89a':'#648b69');
+      face([[x1,.13,1.19],[x2,.13,1.19],[x2,.13,1.10],[x1,.13,1.10]],stripe%2?'#a7bb8e':'#52785b');
+      const a=p(x1,.13,1.10),b=p(x2,.13,1.10);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.quadraticCurveTo((a.x+b.x)/2,a.y+s*.045,b.x,b.y);ctx.closePath();
+      ctx.fillStyle=stripe%2?'#a7bb8e':'#52785b';ctx.fill();
+    }
+    line([-.75,-.47,1.34],[.75,-.47,1.34],'#d1d9af',.018);
+    line([-.75,-.47,1.34],[-.75,.13,1.19],'#8eab7b',.013);
+    // A little cream wooden sign hung from the front of the awning.
+    face([[-.28,.143,1.20],[.28,.143,1.20],[.28,.143,1.075],[-.28,.143,1.075]],'#eadcba');
+    const label=p(0,.15,1.135);
+    ctx.save();ctx.fillStyle='#4e6b4f';ctx.font=`700 ${Math.max(4.5,s*.075)}px Trebuchet MS, sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('J O B S',label.x,label.y);ctx.restore();
+
+    // A proper sturdy bench, with a low shelf and four short chunky legs.
+    for (const y of [.02,.35]) for (const x of [-.52,.44]) box(x,x+.09,y,y+.08,0,.43,'#bc9059','#a17444','#805b38');
+    box(-.54,.54,.04,.44,.14,.19,'#be955c','#976d41','#7e5838');
+    box(-.54,.54,.38,.44,.12,.20,'#bf9257','#a17643','#8b623b');
+    box(-.66,.67,-.015,.50,.39,.47,'#d7b579','#b78a50','#946b40');
+    for (const y of [.12,.29,.45]) line([-.65,y,.474],[.65,y,.474],'rgba(137,94,49,.3)',.009);
+    line([-.65,.50,.47],[.67,.50,.47],'#efd29a',.015);
+    for (const x of [-.56,.56]) {
+      const nail=p(x,.40,.48);ellipse(ctx,nail.x,nail.y,s*.009,s*.007,'#976b40');
+    }
+    // A toolbox, fresh paper, and pencil on top of the work surface.
+    box(-.49,-.22,.10,.35,.475,.60,'#c78d65','#ab7350','#8d5e45');
+    line([-.425,.22,.60],[-.425,.22,.65],'#6c7258',.026);
+    line([-.425,.22,.65],[-.29,.22,.65],'#6c7258',.026);
+    line([-.29,.22,.65],[-.29,.22,.60],'#6c7258',.026);
+    const latch=p(-.355,.355,.54);ellipse(ctx,latch.x,latch.y,s*.015,s*.02,'#ead29a');
+    face([[.03,.06,.48],[.35,.08,.48],[.30,.35,.48],[-.02,.33,.48]],'#faf0d0');
+    for (let i=0;i<3;i++) line([.07,.14+i*.06,.484],[.26-(i%2)*.04,.15+i*.06,.484],'#b9b699',.008);
+    line([.39,.16,.49],[.52,.36,.49],'#e4ba64',.028);
+    line([.50,.33,.491],[.53,.375,.491],'#6f7355',.02);
+    // Two books waiting on the shelf below.
+    box(-.39,-.10,.16,.35,.195,.25,'#f1dfb2','#e3cda0','#b99a70');
+    box(-.40,-.11,.15,.36,.25,.28,'#71917b','#55755f','#46614e');
+    box(-.35,-.07,.15,.34,.28,.32,'#e4b57d','#bf8c59','#9e7146');
+
+    // A terracotta pot and a friendly sprout beside the left post.
+    const pot=p(-.71,.18,.02);
+    ctx.save();ctx.translate(pot.x,pot.y);ctx.scale(s,s);
+    ellipse(ctx,.02,.01,.12,.045,'rgba(72,89,49,.14)');
+    polygon(ctx,[{x:-.09,y:-.15},{x:.09,y:-.15},{x:.06,y:0},{x:-.055,y:0}],'#b67e57');
+    polygon(ctx,[{x:-.09,y:-.15},{x:-.015,y:-.15},{x:-.01,y:0},{x:-.055,y:0}],'#ce9669');
+    ellipse(ctx,0,-.15,.10,.033,'#d4a06e');ellipse(ctx,0,-.15,.075,.021,'#806a45');
+    ctx.strokeStyle='#648651';ctx.lineWidth=.015;ctx.beginPath();ctx.moveTo(0,-.15);ctx.lineTo(0,-.35);ctx.stroke();
+    ellipse(ctx,-.05,-.27,.065,.025,'#86a968');ellipse(ctx,.045,-.32,.065,.026,'#a3bf7c');ctx.restore();
+  }
+
+  drawWorkbenchBadge(tile) {
+    const ctx=this.ctx,badge=this.workbenchBadge(tile),scale=badge.scale;
+    const active=this.hover?.tile?.station==='workbench', available=this.workbenchState.available;
+    ctx.save();ctx.translate(badge.x,badge.y);ctx.scale(scale,scale);
+    ctx.shadowColor='rgba(49,76,45,.12)';ctx.shadowBlur=10;ctx.shadowOffsetY=3;
+    ctx.fillStyle=active?'#fffdef':'#fff9e8';ctx.beginPath();ctx.roundRect(0,0,112,25,12.5);ctx.fill();
+    ctx.shadowColor='transparent';ctx.strokeStyle=active?'#91b078':'rgba(127,154,104,.24)';ctx.lineWidth=1;ctx.stroke();
+    // A miniature clipboard, with a bright paper clip.
+    ctx.fillStyle='#e0bf87';ctx.beginPath();ctx.roundRect(10,6,10,13,1.5);ctx.fill();
+    ctx.fillStyle='#f9edcc';ctx.fillRect(11.5,8,7,9.5);ctx.fillStyle='#7c9a70';ctx.fillRect(13,5.5,4,3);
+    ctx.strokeStyle='#a1b08c';ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(13,11);ctx.lineTo(17,11);ctx.moveTo(13,14);ctx.lineTo(16,14);ctx.stroke();
+    ctx.fillStyle='#56714c';ctx.font='700 8px Trebuchet MS, sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText('WORKBENCH',27,13);
+    ellipse(ctx,98,12.5,9,9,available?'#e3bb78':'#e6ead9');
+    ctx.fillStyle=available?'#72552f':'#7f8f6f';ctx.font='700 9px Trebuchet MS, sans-serif';ctx.textAlign='center';ctx.fillText(available>99?'99+':String(available),98,13);
     ctx.restore();
   }
 

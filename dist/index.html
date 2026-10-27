@@ -23,6 +23,8 @@
       <symbol id="i-tree" viewBox="0 0 24 24"><path d="M12 16v6M9 22h6"/><path d="M12 2C7 2 6 6 7 8c-6 3-3 9 1 9h8c5 0 7-6 1-9 1-3-1-6-5-6Z"/></symbol>
       <symbol id="i-earth" viewBox="0 0 24 24"><path d="m3 9 9-5 9 5-9 5Zm0 0v7l9 5 9-5V9M12 14v7M6 15h.01M17 14h.01"/></symbol>
       <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 5 3 10l5 5M3 10h11a6 6 0 0 1 0 12"/></symbol>
+      <symbol id="i-workbench" viewBox="0 0 24 24"><path d="M3 12h18v4H3zM5 16v6m14-6v6M5 12V3h14v9M8 6h4M8 9h7M7 19h10"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
     </defs>
   </svg>
 
@@ -46,12 +48,13 @@
       <h1>Little<br>beginnings.</h1>
       <p>A patch of green.<br>A breath of fresh air.<br>A world to make your own.</p>
       <div class="island-stat"><span id="tile-count">23</span><span>little hexagons<br>and room to grow</span></div>
+      <button id="open-workbench" class="station-link" aria-haspopup="dialog" aria-controls="workbench-panel"><svg><use href="#i-workbench"/></svg><span>Workbench <small>HEX 01 · START</small></span><span id="station-job-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
     </aside>
 
     <section id="help-panel" class="help-panel" aria-label="Island controls" hidden>
       <div class="panel-heading"><strong>Make yourself at home</strong><button id="close-help" class="text-button" aria-label="Close controls">×</button></div>
       <p>Drag the water to wander. Scroll or pinch to get a little closer.</p>
-      <dl><div><dt>1 · Wander</dt><dd>Look around and discover each tile.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
+      <dl><div><dt>1 · Wander</dt><dd>Look around. Tap the workbench on Hex 01 to open its job board.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
       <p class="help-note">A visual first step for AgentIsland. Changes stay for this visit.</p>
     </section>
 
@@ -92,6 +95,25 @@
 
     <footer class="world-footer"><span class="world-status"><i></i> A quiet place to start</span><button id="motion-toggle" class="motion-toggle" aria-pressed="true">Breeze on</button></footer>
     <div id="announcement" class="announcement" role="status" aria-live="polite"></div>
+    <dialog id="workbench-panel" class="workbench-panel" aria-labelledby="workbench-title" aria-describedby="workbench-description">
+      <div class="workbench-topline"><span class="station-eyebrow">STATION 01 <i></i> THE START</span><button id="close-workbench" class="round-button" aria-label="Close workbench">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem"><svg><use href="#i-workbench"/></svg></span><div><h2 id="workbench-title">The workbench</h2><p id="workbench-description">Good work starts with a little note.</p></div></div>
+      <div class="board-overview"><span><i></i><strong id="available-count">0</strong> available</span><span><strong id="progress-count">0</strong> in progress</span><button id="new-job-button" class="primary-button"><span aria-hidden="true">+</span> Post a job</button></div>
+
+      <form id="job-form" class="job-form" hidden>
+        <div class="form-title"><h3>A new little undertaking</h3><button id="cancel-job" class="text-button" type="button" aria-label="Cancel new job">×</button></div>
+        <label for="job-title">What needs doing?</label><input id="job-title" name="title" maxlength="120" required autocomplete="off" placeholder="Give your job a clear title">
+        <label for="job-description">A few helpful details <span>(optional)</span></label><textarea id="job-description" name="description" maxlength="2000" rows="3" placeholder="What should an agent know before picking it up?"></textarea>
+        <div class="form-bottom"><label for="job-priority">Priority<select id="job-priority" name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="low">Low</option></select></label><button class="primary-button" type="submit">Pin to the board <span aria-hidden="true">↗</span></button></div>
+      </form>
+
+      <div class="job-tabs" role="group" aria-label="Filter jobs"><button class="job-tab active" data-job-filter="available" aria-pressed="true">Available <span id="tab-available">0</span></button><button class="job-tab" data-job-filter="in_progress" aria-pressed="false">In progress <span id="tab-progress">0</span></button><button class="job-tab" data-job-filter="completed" aria-pressed="false">Done <span id="tab-done">0</span></button></div>
+      <div id="jobs-list" class="jobs-list" aria-live="polite"></div>
+
+      <details id="pickup-preview" class="pickup-preview"><summary><span class="preview-spark" aria-hidden="true">✧</span> Try an agent pickup <span class="preview-tag">PREVIEW</span></summary><div class="pickup-preview-content"><p>A preview agent lets you try claiming and finishing a job. It does not run AI work.</p><div class="preview-agent"><span class="preview-avatar" aria-hidden="true">P</span><div><strong>Preview agent</strong><span id="preview-agent-status">Ready to try a job</span></div><button id="enable-preview" class="secondary-button">Enable</button></div></div></details>
+      <p id="board-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div class="board-footer"><span class="local-indicator"></span><span id="storage-status">Saved in this browser. Real agents are not connected yet.</span></div>
+    </dialog>
     <noscript><div class="no-script">This little island needs JavaScript. Enable it to explore the world.</div></noscript>
   </main>
   <script type="module" src="./app.js"></script>

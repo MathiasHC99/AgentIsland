@@ -1,5 +1,6 @@
 import { createWorld, addTile, paintTile, summarizeWorld, hexKey } from './world.js';
 import { IslandRenderer } from './renderer.js';
+import { initWorkbench } from './workbench.js';
 
 const $ = selector => document.querySelector(selector);
 const canvas = $('#island');
@@ -12,6 +13,7 @@ let sunset = false;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let motion = !reducedMotion.matches;
 let announcementTimer;
+let workbench;
 
 function announce(message) {
   const element = $('#announcement');
@@ -29,6 +31,7 @@ function refreshWorld() {
 
 const renderer = new IslandRenderer(canvas, {
   onTileClick(tile) {
+    if (tool === 'explore' && tile.station === 'workbench') { workbench.open(); return; }
     if (tool !== 'paint' || tile.terrain === terrain) return;
     const previous = { ...tile };
     if (paintTile(world, tile.q, tile.r, terrain)) {
@@ -47,13 +50,15 @@ const renderer = new IslandRenderer(canvas, {
   },
   onHover(tile) {
     $('#tile-label').hidden = !tile;
-    if (tile) $('#tile-name').textContent = names[tile.terrain] || 'Room for something new';
+    if (tile) $('#tile-name').textContent = tile.station === 'workbench' ? 'Hex 01 · The workbench · Tap to open' : names[tile.terrain] || 'Room for something new';
   },
   onViewChange(value) {
     const zoom = typeof value === 'number' ? value : value?.zoom ?? renderer.zoom ?? 1;
     $('#zoom-level').textContent = `${Math.round(zoom * 100)}%`;
   },
 });
+
+workbench = initWorkbench({ renderer, onBeforeOpen: () => { showHelp(false); setTool('explore'); } });
 
 function setTool(next) {
   tool = next;
@@ -112,6 +117,10 @@ function showHelp(show) {
 $('#help-button').addEventListener('click', () => showHelp($('#help-panel').hidden));
 $('#close-help').addEventListener('click', () => showHelp(false));
 document.addEventListener('keydown', event => {
+  if ($('#workbench-panel').open) {
+    if (event.key === 'Escape') { event.preventDefault(); $('#workbench-panel').close(); }
+    return;
+  }
   if (event.target.matches('input,textarea,select') || event.altKey) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); undo(); return; }
   if (event.ctrlKey || event.metaKey) return;

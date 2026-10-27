@@ -1,5 +1,6 @@
 /** Small, renderer-independent model of an expandable flat-top hex island. */
 export const TERRAINS = Object.freeze(['meadow', 'grove', 'wildflowers', 'earth']);
+export const START_HEX = Object.freeze({ q: 0, r: 0, number: 1 });
 
 const DIRECTIONS = Object.freeze([
   [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1],
@@ -53,6 +54,11 @@ function makeTile(q, r, terrain, seed) {
 export function createWorld(seed = 'agent-island') {
   const world = new Map();
   const random = seededRandom(seed);
+  world.set(hexKey(START_HEX.q, START_HEX.r), {
+    ...makeTile(START_HEX.q, START_HEX.r, 'meadow', seed),
+    number: START_HEX.number,
+    station: 'workbench',
+  });
   for (let q = -2; q <= 2; q += 1) {
     for (let r = -2; r <= 2; r += 1) {
       if (Math.abs(q + r) > 2) continue;
@@ -62,13 +68,15 @@ export function createWorld(seed = 'agent-island') {
       else if ((q > 0 && r >= 0) || roll < 0.2) terrain = 'wildflowers';
       if (q === 0 && r === 0) terrain = 'meadow';
       if (q === 1 && r === 0) terrain = 'earth';
-      world.set(hexKey(q, r), makeTile(q, r, terrain, seed));
+      if (q !== START_HEX.q || r !== START_HEX.r) {
+        world.set(hexKey(q, r), { ...makeTile(q, r, terrain, seed), number: world.size + 1 });
+      }
     }
   }
   for (const [q, r, terrain] of [
     [-3, 1, 'grove'], [-3, 2, 'meadow'], [0, 3, 'wildflowers'], [2, -3, 'meadow'],
   ]) {
-    world.set(hexKey(q, r), makeTile(q, r, terrain, seed));
+    world.set(hexKey(q, r), { ...makeTile(q, r, terrain, seed), number: world.size + 1 });
   }
   return world;
 }
@@ -91,7 +99,8 @@ export function addTile(world, q, r, terrain = 'meadow') {
   if (world.size > 0 && !neighbors(q, r).some(position => world.has(hexKey(position.q, position.r)))) {
     return null;
   }
-  const tile = makeTile(q, r, terrain, 'new-island-tile');
+  const number = Math.max(0, ...Array.from(world.values(), tile => tile.number || 0)) + 1;
+  const tile = { ...makeTile(q, r, terrain, 'new-island-tile'), number };
   world.set(hexKey(q, r), tile);
   return tile;
 }

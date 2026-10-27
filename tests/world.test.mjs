@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TERRAINS, createWorld, hexKey, neighbors, axialToWorld, frontierTiles,
+  TERRAINS, START_HEX, createWorld, hexKey, neighbors, axialToWorld, frontierTiles,
   addTile, paintTile, summarizeWorld, seededRandom,
 } from '../dist/world.js';
 
@@ -41,6 +41,22 @@ test('all six neighbors project to touching hex centers at every radius', () => 
       assert.ok(Math.abs(Math.hypot(position.x - center.x, position.y - center.y) - Math.sqrt(3) * size) < 1e-10);
     }
   }
+});
+
+test('hex 01 is the anchored starting workbench and survives terrain edits and expansion', () => {
+  const world = createWorld();
+  assert.deepEqual(START_HEX, { q: 0, r: 0, number: 1 });
+  assert.equal(world.values().next().value, world.get('0,0'));
+  assert.equal(world.get('0,0').station, 'workbench');
+  assert.equal(world.get('0,0').number, 1);
+  assert.equal([...world.values()].filter(tile => tile.station === 'workbench').length, 1);
+  assert.equal(new Set([...world.values()].map(tile => tile.number)).size, 23);
+  paintTile(world, 0, 0, 'grove');
+  assert.equal(world.get('0,0').station, 'workbench');
+  assert.equal(world.get('0,0').number, 1);
+  const next = frontierTiles(world)[0];
+  assert.equal(addTile(world, next.q, next.r).number, 24);
+  assert.equal(world.get('0,0').station, 'workbench');
 });
 
 test('frontier consists of unique adjacent empty positions and does not mutate the world', () => {
