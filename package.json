@@ -1,0 +1,9 @@
+{
+  "name": "agent-island-world-preview",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/world.test.mjs"
+  }
+}
