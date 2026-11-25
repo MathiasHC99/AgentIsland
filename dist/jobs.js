@@ -5,6 +5,10 @@ export const JOB_LIMITS = Object.freeze({ title: 120, description: 2000, agentNa
 export const CHECK_LIMITS = Object.freeze({ notes: 2000 });
 export const AGENT_STATUSES = Object.freeze(['idle', 'busy', 'relaxing', 'sleeping']);
 export const HELP_LIMITS = Object.freeze({ title: 120, details: 2000, author: 60 });
+export const TEAM_AGENT_ID = 'island-lead';
+export const TEAM_STAGES = Object.freeze(['plan', 'draft', 'check', 'final']);
+const TEAM_OUTPUT_LIMIT = 12000;
+const BOARD_SAVE_LIMIT = 4_000_000;
 
 let fallbackSequence = 0;
 const now = () => new Date().toISOString();
@@ -108,6 +112,9 @@ export function completeJob(board, jobId, agentId) {
 export function releaseJob(board, jobId, agentId) {
   const result = ownedAssignment(board, jobId, agentId, ['in_progress', 'changes_requested']);
   if (!result.ok) return result;
+  if (result.job.teamRun?.status === 'running') {
+    return failure('team_running', 'Stop the team before returning this job.');
+  }
   result.job.status = 'available';
   result.job.claimedBy = null;
   result.job.claimedAt = null;
@@ -121,6 +128,9 @@ export function releaseJob(board, jobId, agentId) {
 export function submitJobForTesting(board, jobId, agentId) {
   const result = ownedAssignment(board, jobId, agentId);
   if (!result.ok) return result;
+  if (agentId === TEAM_AGENT_ID && result.job.teamRun) {
+    return failure('team_result_required', 'The team must finish its result before submitting the job.');
+  }
   result.job.status = 'testing';
   return result;
 }
@@ -169,6 +179,77 @@ export function resumeJob(board, jobId, agentId) {
   if (!result.ok) return result;
   result.job.status = 'in_progress';
   return result;
+}
+
+/** A new run claims work, revises a submission, or continues the saved steps of a failed attempt. */
+export function startTeamRun(board, jobId, runId) {
+  const job = board.jobs.find(item => item.id === jobId);
+  if (!job) return failure('job_not_found', 'This job is no longer on the board.');
+  const previous = job.teamRun;
+  if (!identifier(runId) || previous?.id === runId) {
+    return failure('invalid_run_id', 'Each attempt needs a fresh run ID.');
+  }
+  let assignment;
+  if (job.status === 'available') {
+    // Only register the lead after checking the job can be claimed.
+    registerAgent(board, { id: TEAM_AGENT_ID, name: 'Island lead' });
+    assignment = claimJob(board, jobId, TEAM_AGENT_ID);
+  } else if (job.status === 'changes_requested') {
+    assignment = resumeJob(board, jobId, TEAM_AGENT_ID);
+  } else if (job.status === 'in_progress' && previous?.status === 'failed') {
+    assignment = ownedAssignment(board, jobId, TEAM_AGENT_ID);
+  } else {
+    return failure('job_unavailable', 'Choose an available job, a failed attempt, or a job returned for changes.');
+  }
+  if (!assignment.ok) return assignment;
+
+  if (previous?.status === 'failed') {
+    job.teamRun = { ...previous, id: runId, status: 'running', error: '' };
+  } else {
+    job.teamRun = {
+      id: runId, status: 'running', plan: '', draft: '', check: '', final: '', error: '',
+      previousFinal: previous?.final || '',
+    };
+  }
+  return assignment;
+}
+
+function activeTeamRun(board, jobId, runId) {
+  const assignment = ownedAssignment(board, jobId, TEAM_AGENT_ID);
+  if (!assignment.ok) return assignment;
+  const run = assignment.job.teamRun;
+  if (run?.id !== runId || run?.status !== 'running') {
+    return failure('run_changed', 'This attempt is no longer running.');
+  }
+  return assignment;
+}
+
+export function saveTeamStep(board, jobId, runId, stage, output) {
+  const assignment = activeTeamRun(board, jobId, runId);
+  if (!assignment.ok) return assignment;
+  const run = assignment.job.teamRun;
+  if (!TEAM_STAGES.includes(stage) || TEAM_STAGES.find(key => !run[key]) !== stage) {
+    return failure('unexpected_step', 'This step has already finished or is waiting for an earlier step.');
+  }
+  if (!text(output, TEAM_OUTPUT_LIMIT)) {
+    return failure('invalid_output', 'The model must return between 1 and 12,000 characters.');
+  }
+  run[stage] = output.trim();
+  if (stage === 'final') {
+    run.status = 'submitted';
+    assignment.job.status = 'testing';
+  }
+  return assignment;
+}
+
+export function stopTeamRun(board, jobId, runId, message = 'Stopped by the user.') {
+  const assignment = activeTeamRun(board, jobId, runId);
+  if (!assignment.ok) return assignment;
+  const run = assignment.job.teamRun;
+  run.status = 'failed';
+  run.error = typeof message === 'string' && message.trim()
+    ? message.trim().slice(0, 500) : 'The run was interrupted.';
+  return assignment;
 }
 
 export function summarizeJobs(board) {
@@ -245,6 +326,23 @@ export function summarizeHelpdesk(board) {
   };
 }
 
+function readTeamRun(value, job) {
+  if (!record(value) || !identifier(value.id) || !['running', 'failed', 'submitted'].includes(value.status)
+      || !text(value.error, 500, false) || !text(value.previousFinal, TEAM_OUTPUT_LIMIT, false)) return null;
+  const run = { id: value.id, status: value.status, error: value.error.trim(), previousFinal: value.previousFinal.trim() };
+  let missing = false;
+  for (const step of TEAM_STAGES) {
+    if (!text(value[step], TEAM_OUTPUT_LIMIT, false)) return null;
+    run[step] = value[step].trim();
+    if (missing && run[step]) return null;
+    if (!run[step]) missing = true;
+  }
+  if ((run.status === 'submitted') !== Boolean(run.final)) return null;
+  if ((run.status === 'failed') !== Boolean(run.error)) return null;
+  if (run.status === 'running' && (job.status !== 'in_progress' || job.claimedBy !== TEAM_AGENT_ID)) return null;
+  return run;
+}
+
 function validatedBoard(value) {
   if (!record(value) || ![1, 2].includes(value.version) || !Array.isArray(value.jobs) || !Array.isArray(value.agents)) return null;
   if (value.helpRequests !== undefined && !Array.isArray(value.helpRequests)) return null;
@@ -308,6 +406,10 @@ function validatedBoard(value) {
       reviews: reviews.map(review => ({ approved: review.approved, notes: review.notes.trim(), createdAt: review.createdAt })),
       legacyCompletion,
     };
+    if (!legacy && item.teamRun !== undefined) {
+      job.teamRun = readTeamRun(item.teamRun, job);
+      if (!job.teamRun) return null;
+    }
     jobs.set(job.id, job);
     board.jobs.push(job);
   }
@@ -346,12 +448,14 @@ function validatedBoard(value) {
 export function serializeJobBoard(board) {
   const valid = validatedBoard(board);
   if (!valid) throw new TypeError('Cannot save an inconsistent workbench job board.');
-  return JSON.stringify(valid);
+  const snapshot = JSON.stringify(valid);
+  if (snapshot.length > BOARD_SAVE_LIMIT) throw new RangeError('This board exceeds the local save limit.');
+  return snapshot;
 }
 
 /** Storage is untrusted. Bad JSON, unsupported versions, or broken assignments start safely empty. */
 export function restoreJobBoard(raw) {
-  if (typeof raw !== 'string' || raw.length > 4_000_000) return createJobBoard();
+  if (typeof raw !== 'string' || raw.length > BOARD_SAVE_LIMIT) return createJobBoard();
   try { return validatedBoard(JSON.parse(raw)) || createJobBoard(); }
   catch { return createJobBoard(); }
 }

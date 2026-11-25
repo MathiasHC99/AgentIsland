@@ -9,6 +9,7 @@
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
   <link rel="stylesheet" href="./player.css">
+  <link rel="stylesheet" href="./team.css">
 </head>
 <body>
   <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -130,12 +131,23 @@
         <div class="form-bottom"><label for="job-priority">Priority<select id="job-priority" name="priority"><option value="normal">Normal</option><option value="high">High</option><option value="low">Low</option></select></label><button class="primary-button" type="submit">Pin to the board <span aria-hidden="true">↗</span></button></div>
       </form>
 
+      <section class="team-roster" aria-labelledby="team-heading">
+        <h3 id="team-heading">AI team</h3>
+        <p>The lead assigns a writer and a checker, then submits the finished text to Tests.</p>
+        <p class="team-consent">Choose “Run with AI team” to send that job to OpenAI. Keep this tab open while the team works.</p>
+        <div class="team-connection-row">
+          <span id="team-connection" role="status">Checking model configuration…</span>
+          <button type="button" id="team-refresh" class="team-link">Check again</button>
+          <button type="button" id="team-station-link" class="secondary-button" hidden></button>
+        </div>
+      </section>
+
       <div class="job-tabs" role="group" aria-label="Filter jobs"><button class="job-tab active" data-job-filter="available" aria-pressed="true">Available <span id="tab-available">0</span></button><button class="job-tab" data-job-filter="in_progress" aria-pressed="false">In progress <span id="tab-progress">0</span></button><button class="job-tab" data-job-filter="completed" aria-pressed="false">Done <span id="tab-done">0</span></button></div>
       <div id="jobs-list" class="jobs-list" aria-live="polite"></div>
 
       <details id="pickup-preview" class="pickup-preview"><summary><span class="preview-spark" aria-hidden="true">✧</span> Try an agent pickup <span class="preview-tag">PREVIEW</span></summary><div class="pickup-preview-content"><p>A preview agent lets you try claiming and finishing a job. It does not run AI work.</p><div class="preview-agent"><span class="preview-avatar" aria-hidden="true">P</span><div><strong>Preview agent</strong><span id="preview-agent-status">Ready to try a job</span></div><button id="enable-preview" class="secondary-button">Enable</button></div></div></details>
       <p id="board-feedback" class="board-feedback" role="status" aria-live="polite"></p>
-      <div class="board-footer"><span class="local-indicator"></span><span id="storage-status">Saved in this browser. Real agents are not connected yet.</span></div>
+      <div class="board-footer"><span class="local-indicator"></span><span id="storage-status">Saved in this browser.</span></div>
     </dialog>
     <dialog id="helpdesk-panel" class="workbench-panel helpdesk-panel" aria-labelledby="helpdesk-title" aria-describedby="helpdesk-description">
       <div class="workbench-topline"><span class="station-eyebrow">THE HELPDESK <i></i> A LITTLE SUPPORT</span><button id="close-helpdesk" class="round-button" aria-label="Close helpdesk">×</button></div>
@@ -150,7 +162,7 @@
       <div class="job-tabs" role="group" aria-label="Filter help requests"><button class="job-tab active" data-help-filter="open" aria-pressed="true">Open questions <span id="help-tab-open">0</span></button><button class="job-tab" data-help-filter="resolved" aria-pressed="false">Resolved <span id="help-tab-resolved">0</span></button></div>
       <div id="help-list" class="jobs-list" aria-live="polite"></div>
       <p id="help-feedback" class="board-feedback" role="status" aria-live="polite"></p>
-      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser.</span></div>
     </dialog>
 
     <dialog id="spa-panel" class="workbench-panel spa-panel" aria-labelledby="spa-title" aria-describedby="spa-description">
@@ -172,7 +184,7 @@
         <button id="spa-visit-workbench" class="spa-workbench-link" hidden>Visit the workbench <span aria-hidden="true">↗</span></button>
       </section>
       <p id="spa-feedback" class="board-feedback" role="status" aria-live="polite"></p>
-      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+      <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser.</span></div>
     </dialog>
     <dialog id="test-panel" class="workbench-panel quality-panel test-panel" aria-labelledby="test-title" aria-describedby="test-description">
       <div class="workbench-topline"><span class="station-eyebrow">THE TEST STATION <i></i> CHECK THE WORK</span><button id="close-test" class="round-button" aria-label="Close test station">×</button></div>
@@ -181,7 +193,7 @@
       <p class="quality-intro">Record what you checked. A pass moves the job to review; a failure sends it back for changes.</p>
       <div id="test-list" class="quality-list" aria-live="polite"></div>
       <p id="test-feedback" class="board-feedback" role="status" aria-live="polite"></p>
-      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser.</span></div>
     </dialog>
     <dialog id="review-panel" class="workbench-panel quality-panel review-panel" aria-labelledby="review-title" aria-describedby="review-description">
       <div class="workbench-topline"><span class="station-eyebrow">THE REVIEW STATION <i></i> FINAL DECISION</span><button id="close-review" class="round-button" aria-label="Close review station">×</button></div>
@@ -190,7 +202,7 @@
       <p class="quality-intro">Read the test result, then approve the job or request changes with feedback.</p>
       <div id="review-list" class="quality-list" aria-live="polite"></div>
       <p id="review-feedback" class="board-feedback" role="status" aria-live="polite"></p>
-      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser.</span></div>
     </dialog>
     <noscript><div class="no-script">This little island needs JavaScript. Enable it to explore the world.</div></noscript>
   </main>

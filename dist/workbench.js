@@ -1,6 +1,7 @@
 import {
   registerAgent, postJob, claimJob, submitJobForTesting, resumeJob, releaseJob, summarizeJobs,
 } from './jobs.js';
+import { appendTeamOutput, createTeamControls } from './team-ui.js';
 
 const PREVIEW_AGENT = 'preview-agent';
 const $ = selector => document.querySelector(selector);
@@ -17,6 +18,7 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
   let filter = 'available';
   let submitting = false;
   const panel = $('#workbench-panel');
+  const team = createTeamControls({ store, setFilter, feedback, render });
 
   function feedback(message, error = false) {
     $('#board-feedback').textContent = message;
@@ -82,12 +84,15 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
       const note = latest?.notes;
       if (note) card.append(element('p', 'job-description', `Feedback: ${note}`));
     }
+    appendTeamOutput(card, job);
+    team.addActions(footer, job, board);
     card.append(footer);
     return card;
   }
 
   function render() {
     board = store.getBoard();
+    team.update(board);
     const counts = summarizeJobs(board);
     const preview = board.agents.find(agent => agent.id === PREVIEW_AGENT);
     $('#available-count').textContent = counts.available;
@@ -112,7 +117,7 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
     $('#enable-preview').disabled = !!preview;
     $('#workbench-panel .preview-agent').classList.toggle('is-busy', preview?.status === 'busy');
     $('#storage-status').textContent = store.storageAvailable
-      ? 'Saved in this browser. Real agents are not connected yet.'
+      ? 'Saved in this browser.'
       : 'Changes last for this visit; browser storage is unavailable.';
 
     const jobs = board.jobs.filter(job => filter === 'in_progress'
@@ -148,6 +153,7 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
     onBeforeOpen?.();
     render();
     if (!panel.open) panel.showModal();
+    team.refresh();
   }
 
   $('#open-workbench').addEventListener('click', open);
@@ -179,5 +185,5 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
   $('#enable-preview').addEventListener('click', () => mutate(() => registerAgent(board, { id: PREVIEW_AGENT, name: 'Preview agent' }), 'Preview enabled. Pick up any available job to try the handoff.'));
   const unsubscribe = store.subscribe(render);
   render();
-  return { open, destroy: unsubscribe };
+  return { open, destroy() { unsubscribe(); team.destroy(); } };
 }

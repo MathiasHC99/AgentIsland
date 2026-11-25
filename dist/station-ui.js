@@ -111,7 +111,7 @@ export function initStations({ store, renderer, onBeforeOpen, openWorkbench }) {
     renderHelpdesk(board);
     renderSpa(board);
     document.querySelectorAll('[data-station-storage]').forEach(node => {
-      node.textContent = store.storageAvailable ? 'Saved in this browser. Real agents are not connected yet.' : 'Changes last for this visit; browser storage is unavailable.';
+      node.textContent = store.storageAvailable ? 'Saved in this browser.' : 'Changes last for this visit; browser storage is unavailable.';
     });
   }
 

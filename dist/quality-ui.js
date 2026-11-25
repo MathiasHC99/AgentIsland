@@ -1,4 +1,5 @@
 import { recordTestResult, recordReviewDecision } from './jobs.js';
+import { appendTeamOutput } from './team-ui.js';
 
 const $ = selector => document.querySelector(selector);
 const node = (tag, className = '', content) => {
@@ -71,6 +72,7 @@ export function initQualityStations({ renderer, store, onBeforeOpen }) {
     meta.append(node('span', 'job-date', `Posted ${stamp(job.createdAt)}`));
     card.append(meta, node('h3', 'job-title', job.title));
     if (job.description) card.append(node('p', 'job-description', job.description));
+    appendTeamOutput(card, job);
     if (station === 'review') {
       const run = latestEntry(job, 'test');
       if (run) {
@@ -147,7 +149,7 @@ export function initQualityStations({ renderer, store, onBeforeOpen }) {
     renderStation('review', board);
     document.querySelectorAll('[data-quality-storage]').forEach(element => {
       element.textContent = store.storageAvailable
-        ? 'Saved in this browser. Real agents are not connected yet.'
+        ? 'Saved in this browser.'
         : 'Changes last for this visit; browser storage is unavailable.';
     });
   }
