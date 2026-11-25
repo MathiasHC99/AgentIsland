@@ -1,5 +1,5 @@
 import {
-  registerAgent, postJob, claimJob, completeJob, releaseJob, summarizeJobs,
+  registerAgent, postJob, claimJob, submitJobForTesting, resumeJob, releaseJob, summarizeJobs,
 } from './jobs.js';
 
 const PREVIEW_AGENT = 'preview-agent';
@@ -55,18 +55,32 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
       }
     } else {
       const owner = board.agents.find(agent => agent.id === job.claimedBy);
-      footer.append(element('span', 'job-owner', `${job.status === 'completed' ? '✓ Finished by' : 'Working on it ·'} ${owner?.name || 'Agent'}`));
-      if (job.status === 'in_progress' && job.claimedBy === PREVIEW_AGENT) {
+      const stage = {
+        in_progress: 'Working on it', changes_requested: 'Changes requested',
+        testing: 'At the Test station', review: 'At the Review station', completed: 'Approved',
+      }[job.status] || job.status;
+      footer.append(element('span', 'job-owner', `${stage} · ${owner?.name || 'Agent'}`));
+      if (['in_progress', 'changes_requested'].includes(job.status) && job.claimedBy === PREVIEW_AGENT) {
         const actions = element('div', 'job-card-actions');
         const release = element('button', 'job-return', 'Return');
         release.title = 'Return this job to the available board';
         release.addEventListener('click', () => mutate(() => releaseJob(board, job.id, PREVIEW_AGENT), 'Returned to the board, ready for another pickup.', 'available'));
-        const complete = element('button', 'secondary-button complete-job', 'Mark done');
-        complete.title = 'Complete the preview assignment';
-        complete.addEventListener('click', () => mutate(() => completeJob(board, job.id, PREVIEW_AGENT), 'Preview complete. The agent is available again.', 'completed'));
-        actions.append(release, complete);
+        const advance = element('button', 'secondary-button complete-job', job.status === 'changes_requested' ? 'Resume work' : 'Send to tests');
+        advance.title = job.status === 'changes_requested' ? 'Resume work after feedback' : 'Submit this job to the Test station';
+        advance.addEventListener('click', () => job.status === 'changes_requested'
+          ? mutate(() => resumeJob(board, job.id, PREVIEW_AGENT), 'Work resumed. You can send it to tests when ready.', 'in_progress')
+          : mutate(() => submitJobForTesting(board, job.id, PREVIEW_AGENT), 'Sent to the Test station for a check.', 'in_progress'));
+        actions.append(release, advance);
         footer.append(actions);
       }
+    }
+    if (job.status === 'changes_requested') {
+      const lastTest = job.testRuns?.at(-1);
+      const lastReview = job.reviews?.at(-1);
+      const latest = [lastTest?.passed === false ? lastTest : null, lastReview?.approved === false ? lastReview : null]
+        .filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      const note = latest?.notes;
+      if (note) card.append(element('p', 'job-description', `Feedback: ${note}`));
     }
     card.append(footer);
     return card;
@@ -77,9 +91,10 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
     const counts = summarizeJobs(board);
     const preview = board.agents.find(agent => agent.id === PREVIEW_AGENT);
     $('#available-count').textContent = counts.available;
-    $('#progress-count').textContent = counts.inProgress;
+    const working = board.jobs.filter(job => ['in_progress', 'changes_requested'].includes(job.status)).length;
+    $('#progress-count').textContent = working;
     $('#tab-available').textContent = counts.available;
-    $('#tab-progress').textContent = counts.inProgress;
+    $('#tab-progress').textContent = working;
     $('#tab-done').textContent = counts.completed;
     $('#station-job-count').textContent = counts.available;
     $('#open-workbench').setAttribute('aria-label', `Open workbench on Hex 01, ${counts.available} available jobs`);
@@ -100,7 +115,8 @@ export function initWorkbench({ renderer, onBeforeOpen, store } = {}) {
       ? 'Saved in this browser. Real agents are not connected yet.'
       : 'Changes last for this visit; browser storage is unavailable.';
 
-    const jobs = board.jobs.filter(job => job.status === filter);
+    const jobs = board.jobs.filter(job => filter === 'in_progress'
+      ? ['in_progress', 'changes_requested'].includes(job.status) : job.status === filter);
     const priority = { high: 0, normal: 1, low: 2 };
     jobs.sort((a, b) => filter === 'available' ? priority[a.priority] - priority[b.priority] || b.createdAt.localeCompare(a.createdAt) : b.createdAt.localeCompare(a.createdAt));
     const list = $('#jobs-list');

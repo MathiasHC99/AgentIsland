@@ -1,10 +1,11 @@
 import { axialToWorld, frontierTiles } from './world.js';
+import { FirstPersonRenderer } from './first-person.js';
 
 const TAU = Math.PI * 2;
 const TILT = 0.58;
 const CORNERS = Array.from({ length: 6 }, (_, i) => ({ x: Math.cos(i * Math.PI / 3), y: Math.sin(i * Math.PI / 3) }));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const STATIONS = new Set(['workbench', 'helpdesk', 'spa']);
+const STATIONS = new Set(['workbench', 'helpdesk', 'spa', 'test', 'review']);
 const count = value => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 
 function random(seed) {
@@ -62,12 +63,15 @@ export class IslandRenderer {
     this.workbenchState = { available: 0, inProgress: 0, total: 0 };
     this.helpdeskState = { open: 0, resolved: 0, total: 0 };
     this.spaState = { relaxing: 0, sleeping: 0, total: 0 };
+    this.testState = { pending: 0 };
+    this.reviewState = { pending: 0 };
     this.listeners = [];
     this.pointers = new Map();
     this.dirty = true;
     this.frame = null;
     this.destroyed = false;
     this.lastFrame = -100;
+    this.firstPerson = new FirstPersonRenderer(this);
     this.bindEvents();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
@@ -96,6 +100,7 @@ export class IslandRenderer {
       this.hasWorld = true;
       this.fitCamera();
     }
+    this.explorer?.syncWorld();
     this.invalidate();
   }
 
@@ -124,6 +129,9 @@ export class IslandRenderer {
     this.spaState = { relaxing: count(state.relaxing), sleeping: count(state.sleeping), total: count(state.total) };
     this.invalidate();
   }
+
+  setTestState(state = {}) { this.testState = { pending: count(state.pending) }; this.invalidate(); }
+  setReviewState(state = {}) { this.reviewState = { pending: count(state.pending) }; this.invalidate(); }
 
   panBy(dx, dy) {
     this.pan.x += dx;
@@ -175,7 +183,7 @@ export class IslandRenderer {
   origin() {
     return {
       x: this.width * (this.width > 900 ? 0.59 : 0.5) + this.pan.x,
-      y: this.height * (this.width > 700 ? 0.54 : 0.47) + this.pan.y,
+      y: this.height * (this.width > 700 ? 0.54 : 0.52) + this.pan.y,
     };
   }
 
@@ -200,6 +208,7 @@ export class IslandRenderer {
       return { x: event.clientX - r.left, y: event.clientY - r.top };
     };
     listen(this.canvas, 'pointerdown', event => {
+      if (this.explorer?.active) return;
       if (event.button !== 0 && event.button !== 1) return;
       this.canvas.setPointerCapture(event.pointerId);
       const point = localPoint(event);
@@ -213,6 +222,7 @@ export class IslandRenderer {
       this.canvas.style.cursor = 'grabbing';
     });
     listen(this.canvas, 'pointermove', event => {
+      if (this.explorer?.active) return;
       const point = localPoint(event);
       if (this.pointers.has(event.pointerId)) {
         this.pointers.set(event.pointerId, point);
@@ -258,6 +268,7 @@ export class IslandRenderer {
     });
     listen(this.canvas, 'wheel', event => {
       event.preventDefault();
+      if (this.explorer?.active) return;
       this.zoomBy(Math.exp(-event.deltaY * 0.0013), localPoint(event));
     }, { passive: false });
     listen(document, 'visibilitychange', () => this.invalidate());
@@ -319,18 +330,22 @@ export class IslandRenderer {
   tick(now) {
     this.frame = null;
     if (this.destroyed || document.hidden) return;
-    if ((this.dirty || this.motion) && now - this.lastFrame > 30) {
+    const seconds = Math.max(0, Math.min(.05, (now - (this.previousTick ?? now)) / 1000));
+    this.previousTick = now;
+    this.explorer?.update(seconds);
+    if ((this.dirty || this.motion || this.explorer?.active) && now - this.lastFrame > (this.explorer?.active ? 14 : 30)) {
       this.draw(this.motion ? now * 0.001 : 0);
       this.lastFrame = now;
       this.dirty = false;
     }
-    if (this.motion || this.dirty) this.frame = requestAnimationFrame(t => this.tick(t));
+    if (this.motion || this.dirty || this.explorer?.active) this.frame = requestAnimationFrame(t => this.tick(t));
   }
 
   draw(time) {
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
+    if (this.explorer?.active) { this.firstPerson.draw(time); return; }
     this.drawWater(time);
     const tiles = [...this.world.values()].sort((a, b) => axialToWorld(a.q, a.r).y - axialToWorld(b.q, b.r).y);
     if (!tiles.length) return;
@@ -356,6 +371,10 @@ export class IslandRenderer {
     }
     // Shadows sit on the land plane. Objects are painted from back to front.
     for (const obj of objects) if (obj.type === 'tree') this.drawTreeShadow(obj);
+    if (this.explorer) {
+      for (const actor of this.explorer.getActors()) objects.push({ ...actor, type: 'character' });
+      objects.push({ ...this.explorer.player, type: 'character', name: 'You', color: '#b18b56', light: '#efd499', player: true });
+    }
     objects.sort((a, b) => a.y - b.y);
     for (const obj of objects) this.drawObject(obj, time);
     if (this.hover && !this.hover.frontier) {
@@ -515,9 +534,12 @@ export class IslandRenderer {
   }
 
   drawObject(obj, time) {
+    if (obj.type === 'character') { this.drawCharacter(obj, time); return; }
     if (obj.type === 'workbench') { this.drawWorkbench(obj.tile); return; }
     if (obj.type === 'helpdesk') { this.drawHelpdesk(obj.tile); return; }
     if (obj.type === 'spa') { this.drawSpa(obj.tile, time); return; }
+    if (obj.type === 'test') { this.drawTestStation(obj.tile); return; }
+    if (obj.type === 'review') { this.drawReviewStation(obj.tile); return; }
     const ctx = this.ctx, p = this.project(obj.x, obj.y), s = this.baseSize * this._zoom;
     ctx.save(); ctx.translate(p.x, p.y);
     if (obj.type === 'tree') {
@@ -549,6 +571,28 @@ export class IslandRenderer {
       polygon(ctx, [{ x: .07, y: -.19 }, { x: .27, y: -.37 }, { x: .4, y: -.09 }, { x: .24, y: .05 }], '#8a9b8c');
     }
     ctx.restore();
+  }
+
+  drawCharacter(obj, time) {
+    const ctx = this.ctx, p = this.project(obj.x, obj.y, obj.z || 0), s = this.baseSize * this._zoom;
+    const swing = obj.moving ? Math.sin(time * 7 + (obj.phase || 0)) * .035 : 0;
+    ctx.save(); ctx.translate(p.x, p.y); ctx.scale(s, s);
+    ellipse(ctx, 0, .025, .2, .065, 'rgba(52,86,52,.19)');
+    ctx.fillStyle = '#566d5a';
+    ctx.fillRect(-.11, -.2 + swing, .08, .2); ctx.fillRect(.03, -.2 - swing, .08, .2);
+    ctx.fillStyle = obj.color; ctx.beginPath(); ctx.roundRect(-.16, -.44, .32, .28, .06); ctx.fill();
+    ctx.fillStyle = obj.light; ctx.fillRect(-.19, -.4, .07, .19); ctx.fillRect(.12, -.4, .07, .19);
+    ctx.fillStyle = '#f6eacb'; ctx.beginPath(); ctx.roundRect(-.16, -.69, .32, .24, .07); ctx.fill();
+    ctx.fillStyle = '#45645c'; ctx.beginPath(); ctx.roundRect(-.12, -.62, .24, .1, .03); ctx.fill();
+    ctx.fillStyle = '#e5eeb7'; ctx.fillRect(-.07, -.59, .035, .025); ctx.fillRect(.035, -.59, .035, .025);
+    ctx.fillStyle = obj.color; ctx.fillRect(-.013, -.76, .026, .07);
+    ellipse(ctx, 0, -.78, .04, .03, obj.light);
+    ctx.restore();
+    if (obj.player) {
+      ctx.font = '10px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#fffbed';
+      ctx.beginPath(); ctx.roundRect(p.x - 16, p.y - s * .9 - 11, 32, 18, 9); ctx.fill();
+      ctx.fillStyle = '#7b683e'; ctx.fillText('You', p.x, p.y - s * .9 + 2);
+    }
   }
 
   workbenchHitPolygon(tile) {
@@ -715,7 +759,8 @@ export class IslandRenderer {
   drawStationGround(tile) {
     const { ctx, p, s, face } = this.stationPainter(tile);
     const spa = tile.station === 'spa';
-    face([[-.75,-.35,0],[.63,-.38,0],[.86,.13,0],[.54,.68,0],[-.5,.68,0],[-.85,.16,0]], spa ? '#d0ccac' : 'rgba(224,209,172,.63)');
+    const ground = { spa: '#d0ccac', test: '#d3ded0', review: '#e4d4ba' };
+    face([[-.75,-.35,0],[.63,-.38,0],[.86,.13,0],[.54,.68,0],[-.5,.68,0],[-.85,.16,0]], ground[tile.station] || 'rgba(224,209,172,.63)');
     const shadow=p(.12,.14);
     ctx.save();ctx.filter=`blur(${Math.max(1.5,s*.025)}px)`;
     ellipse(ctx,shadow.x+s*.08,shadow.y+s*.03,s*.73,s*.22,'rgba(62,81,63,.17)');ctx.restore();
@@ -735,7 +780,7 @@ export class IslandRenderer {
     }
     const sign=p(-.58,.56,.02);
     ctx.save();ctx.translate(sign.x,sign.y);ctx.scale(s,s);
-    ctx.fillStyle=spa?'#9b8f9d':'#6c9297';ctx.beginPath();ctx.roundRect(-.13,-.065,.26,.13,.025);ctx.fill();
+    ctx.fillStyle={spa:'#9b8f9d',test:'#628b8b',review:'#a68368'}[tile.station] || '#6c9297';ctx.beginPath();ctx.roundRect(-.13,-.065,.26,.13,.025);ctx.fill();
     ctx.fillStyle=spa?'#ece3e9':'#e6eee1';
     ctx.font=`700 ${.085}px Trebuchet MS, sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
     ctx.fillText(String(tile.number || '').padStart(2,'0'),0,0);ctx.restore();
@@ -787,6 +832,54 @@ export class IslandRenderer {
     box(-.66,-.30,.51,.72,.18,.24,'#d4b784','#b59360','#987746');
     box(.49,.75,-.29,-.02,.03,.31,'#8baeb0','#709599','#5b7c82');
     line([.54,-.014,.26],[.70,-.014,.26],'#d5dfca',.022);
+  }
+
+  drawTestStation(tile) {
+    const { ctx, p, s, face, box, line } = this.stationPainter(tile);
+    // A compact little lab: teal canopy, check board, and glass samples.
+    for (const x of [-.56,.49]) box(x,x+.07,-.31,-.23,0,1.24,'#d0ae78','#b98f5d','#94734d');
+    box(-.53,.53,-.33,-.24,.48,1.15,'#afc8bb','#91b4aa','#719c9a');
+    face([[-.46,-.225,.58],[.46,-.225,.58],[.46,-.225,1.08],[-.46,-.225,1.08]],'#f7f2dc');
+    for (const [y,width] of [[1.01,.27],[.88,.38],[.75,.31]]) {
+      line([-.34,-.215,y],[-.34+width,-.215,y],'#96aaa0',.018);
+      const mark=p(.27,-.211,y-.014);
+      ellipse(ctx,mark.x,mark.y,s*.032,s*.028,'#83b2a0');
+    }
+    face([[-.72,-.48,1.35],[.72,-.48,1.35],[.72,.09,1.21],[-.72,.09,1.21]],'#78aaa4');
+    face([[-.72,.09,1.21],[.72,.09,1.21],[.72,.09,1.12],[-.72,.09,1.12]],'#5f9290');
+    for (const x of [-.46,-.18,.1,.38]) line([x,.09,1.12],[x,.09,1.21],'#b7d5c3',.014);
+    box(-.58,.59,-.04,.43,.02,.48,'#cba477','#b48b60','#92704e');
+    box(-.62,.63,-.09,.48,.48,.54,'#e7cd9d','#ccaa79','#aa875b');
+    // Three coloured sample vials and a small test checklist.
+    for (const [x,color] of [[-.37,'#88b9ad'],[-.16,'#d6bc80'],[.05,'#9eb6d0']]) {
+      box(x,x+.105,.12,.22,.55,.79,color,'#e1ead5',color);
+      line([x+.019,.13,.74],[x+.087,.13,.74],'rgba(255,255,241,.72)',.01);
+    }
+    face([[.24,.02,.55],[.51,.02,.55],[.51,.34,.55],[.24,.34,.55]],'#faf2d8');
+    for (let i=0;i<3;i++) line([.29,.09+i*.07,.556],[.46,.09+i*.07,.556],'#9cb7aa',.012);
+  }
+
+  drawReviewStation(tile) {
+    const { ctx, p, s, face, box, line } = this.stationPainter(tile);
+    // A warm review booth with a raised approval mark and paper portfolio.
+    for (const x of [-.55,.48]) box(x,x+.07,-.31,-.23,0,1.24,'#d0a778','#b78b5f','#936f4c');
+    box(-.52,.52,-.32,-.23,.44,1.13,'#d9b896','#c19b75','#a47d5c');
+    face([[-.44,-.218,.55],[.44,-.218,.55],[.44,-.218,1.06],[-.44,-.218,1.06]],'#f7efdc');
+    const seal=p(0,-.21,.82);
+    ellipse(ctx,seal.x,seal.y,s*.18,s*.17,'#d3b381');
+    line([-.11,-.205,.82],[-.025,-.205,.73],'#fff8e1',.032);
+    line([-.025,-.205,.73],[.14,-.205,.95],'#fff8e1',.032);
+    face([[-.71,-.46,1.34],[.71,-.46,1.34],[.71,.09,1.21],[-.71,.09,1.21]],'#c59573');
+    face([[-.71,.09,1.21],[.71,.09,1.21],[.71,.09,1.11],[-.71,.09,1.11]],'#a9765e');
+    line([-.66,.09,1.105],[.66,.09,1.105],'#f1d4ac',.018);
+    box(-.59,.60,-.03,.44,.04,.48,'#caa677','#aa855d','#8e6d4e');
+    box(-.63,.64,-.08,.48,.48,.54,'#ecd5aa','#d1b487','#ae8e64');
+    for (const [offset,shade] of [[0,'#f8efd7'],[.018,'#fff9e8']]) {
+      face([[-.35,.02,.55+offset],[.16,.02,.55+offset],[.18,.31,.55+offset],[-.33,.31,.55+offset]],shade);
+    }
+    for(let i=0;i<3;i++) line([-.25,.09+i*.07,.579],[.08,.09+i*.07,.579],'#b6a48d',.012);
+    box(.32,.49,.08,.24,.54,.59,'#a17b62','#bd9875','#8d6955');
+    const stamp=p(.405,.16,.63);ellipse(ctx,stamp.x,stamp.y,s*.07,s*.038,'#9d735c');
   }
 
   drawSpa(tile, time) {
@@ -855,6 +948,7 @@ export class IslandRenderer {
   }
 
   drawOtherStationBadge(tile) {
+    if (tile.station === 'test' || tile.station === 'review') { this.drawQualityStationBadge(tile); return; }
     const ctx=this.ctx,badge=this.stationBadge(tile),scale=badge.scale,spa=tile.station==='spa';
     const active=this.hover?.tile?.station===tile.station;
     const number=spa?this.spaState.relaxing+this.spaState.sleeping:this.helpdeskState.open;
@@ -872,6 +966,26 @@ export class IslandRenderer {
     ctx.fillStyle=spa?'#8d7c96':'#5f8588';ctx.font='700 8px Trebuchet MS,sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(spa?'THE SPA':'HELPDESK',27,13);
     ellipse(ctx,88,12.5,9,9,spa?'#e9dfeb':number?'#c6ddd8':'#e4ebe0');
     ctx.fillStyle=spa?'#9b85a4':'#6b8c83';ctx.font='700 9px Trebuchet MS,sans-serif';ctx.textAlign='center';ctx.fillText(number>99?'99+':String(number),88,13);
+    ctx.restore();
+  }
+
+  drawQualityStationBadge(tile) {
+    const ctx=this.ctx,badge=this.stationBadge(tile),scale=badge.scale,test=tile.station==='test';
+    const active=this.hover?.tile?.station===tile.station;
+    const pending=test?this.testState.pending:this.reviewState.pending;
+    const accent=test?'#5f9692':'#a8795d';
+    ctx.save();ctx.translate(badge.x,badge.y);ctx.scale(scale,scale);
+    ctx.shadowColor='rgba(49,76,65,.12)';ctx.shadowBlur=10;ctx.shadowOffsetY=3;
+    ctx.fillStyle=active?'#fffdf0':'#fbf9ed';ctx.beginPath();ctx.roundRect(0,0,102,25,12.5);ctx.fill();
+    ctx.shadowColor='transparent';ctx.strokeStyle=active?accent:(test?'#c0d9ce':'#dfd0b9');ctx.lineWidth=1;ctx.stroke();
+    ellipse(ctx,15,12.5,7,7,test?'#dcece4':'#f0dfc6');
+    ctx.strokeStyle=accent;ctx.lineWidth=1.5;ctx.lineCap='round';ctx.beginPath();
+    if(test) {ctx.moveTo(13,7);ctx.lineTo(13,12);ctx.lineTo(10.5,17);ctx.lineTo(19.5,17);ctx.lineTo(17,12);ctx.lineTo(17,7);}
+    else {ctx.moveTo(11,13);ctx.lineTo(14,16);ctx.lineTo(20,9);}
+    ctx.stroke();
+    ctx.fillStyle=accent;ctx.font='700 8px Trebuchet MS,sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(test?'TEST LAB':'REVIEW',27,13);
+    ellipse(ctx,88,12.5,9,9,test?'#deebe4':'#f0e2d0');
+    ctx.fillStyle=accent;ctx.font='700 9px Trebuchet MS,sans-serif';ctx.textAlign='center';ctx.fillText(pending>99?'99+':String(pending),88,13);
     ctx.restore();
   }
 

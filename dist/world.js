@@ -5,6 +5,8 @@ export const STATIONS = Object.freeze({
   workbench: Object.freeze({ name: 'Workbench', q: 0, r: 0 }),
   helpdesk: Object.freeze({ name: 'Helpdesk', q: -2, r: 1 }),
   spa: Object.freeze({ name: 'Spa', q: 1, r: 1 }),
+  test: Object.freeze({ name: 'Test station', q: 1, r: -1 }),
+  review: Object.freeze({ name: 'Review station', q: 2, r: -1 }),
 });
 
 const DIRECTIONS = Object.freeze([

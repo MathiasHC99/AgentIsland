@@ -1,7 +1,8 @@
 /** Local workbench rules. This queue does not execute jobs or connect AI providers. */
 export const JOB_PRIORITIES = Object.freeze(['low', 'normal', 'high']);
-export const JOB_STATUSES = Object.freeze(['available', 'in_progress', 'completed']);
+export const JOB_STATUSES = Object.freeze(['available', 'in_progress', 'testing', 'review', 'changes_requested', 'completed']);
 export const JOB_LIMITS = Object.freeze({ title: 120, description: 2000, agentName: 60 });
+export const CHECK_LIMITS = Object.freeze({ notes: 2000 });
 export const AGENT_STATUSES = Object.freeze(['idle', 'busy', 'relaxing', 'sleeping']);
 export const HELP_LIMITS = Object.freeze({ title: 120, details: 2000, author: 60 });
 
@@ -23,7 +24,7 @@ function uniqueId(board, kind = 'job') {
 }
 
 export function createJobBoard() {
-  return { version: 1, jobs: [], agents: [], helpRequests: [] };
+  return { version: 2, jobs: [], agents: [], helpRequests: [] };
 }
 
 /** Re-registering a stable identity is safe and never resets its current assignment. */
@@ -54,6 +55,9 @@ export function postJob(board, input = {}) {
     createdAt: now(),
     claimedAt: null,
     completedAt: null,
+    testRuns: [],
+    reviews: [],
+    legacyCompletion: false,
   };
   board.jobs.push(job);
   return { ok: true, job };
@@ -70,7 +74,7 @@ export function claimJob(board, jobId, agentId) {
     return failure('agent_resting', 'This agent is taking a break at the spa. Wake it before picking up a job.');
   }
   if (agent.status !== 'idle' || agent.jobId !== null
-      || board.jobs.some(item => item.status === 'in_progress' && item.claimedBy === agentId)) {
+      || board.jobs.some(item => ACTIVE_JOB_STATUSES.has(item.status) && item.claimedBy === agentId)) {
     return failure('agent_busy', 'This agent already has a job. Finish or return it before picking up another.');
   }
   job.status = 'in_progress';
@@ -81,12 +85,14 @@ export function claimJob(board, jobId, agentId) {
   return { ok: true, job, agent };
 }
 
-function ownedAssignment(board, jobId, agentId) {
+const ACTIVE_JOB_STATUSES = new Set(['in_progress', 'testing', 'review', 'changes_requested']);
+
+function ownedAssignment(board, jobId, agentId, allowedStatuses = ['in_progress']) {
   const agent = board.agents.find(item => item.id === agentId);
   if (!agent) return failure('agent_not_found', 'This agent is not registered at the workbench.');
   const job = board.jobs.find(item => item.id === jobId);
   if (!job) return failure('job_not_found', 'This job is no longer on the board.');
-  if (job.status !== 'in_progress') return failure('job_not_in_progress', 'This job is not currently being worked on.');
+  if (!allowedStatuses.includes(job.status)) return failure('job_not_in_progress', 'This job is not in the required stage.');
   if (job.claimedBy !== agent.id || agent.jobId !== job.id || agent.status !== 'busy') {
     return failure('not_job_owner', 'Only the agent working on this job can change its assignment.');
   }
@@ -94,17 +100,13 @@ function ownedAssignment(board, jobId, agentId) {
 }
 
 export function completeJob(board, jobId, agentId) {
-  const result = ownedAssignment(board, jobId, agentId);
+  const result = ownedAssignment(board, jobId, agentId, [...ACTIVE_JOB_STATUSES]);
   if (!result.ok) return result;
-  result.job.status = 'completed';
-  result.job.completedAt = now();
-  result.agent.status = 'idle';
-  result.agent.jobId = null;
-  return result;
+  return failure('review_required', 'Approve this job at the review station to complete it.');
 }
 
 export function releaseJob(board, jobId, agentId) {
-  const result = ownedAssignment(board, jobId, agentId);
+  const result = ownedAssignment(board, jobId, agentId, ['in_progress', 'changes_requested']);
   if (!result.ok) return result;
   result.job.status = 'available';
   result.job.claimedBy = null;
@@ -115,10 +117,67 @@ export function releaseJob(board, jobId, agentId) {
   return result;
 }
 
+/** The assigned agent hands work to the test station without freeing the assignment. */
+export function submitJobForTesting(board, jobId, agentId) {
+  const result = ownedAssignment(board, jobId, agentId);
+  if (!result.ok) return result;
+  result.job.status = 'testing';
+  return result;
+}
+
+/** A manual test run records evidence and routes the job to review or changes. */
+export function recordTestResult(board, jobId, input = {}) {
+  const job = board.jobs.find(item => item.id === jobId);
+  if (!job) return failure('job_not_found', 'This job is no longer on the board.');
+  if (job.status !== 'testing') return failure('job_not_testing', 'Submit this job for testing first.');
+  if (!record(input) || typeof input.passed !== 'boolean'
+      || !text(input.notes ?? '', CHECK_LIMITS.notes, false)
+      || (!input.passed && !(input.notes ?? '').trim())) {
+    return failure('invalid_test_result', 'Choose pass or fail and add notes for a failure (up to 2,000 characters).');
+  }
+  const testRun = { passed: input.passed, notes: (input.notes ?? '').trim(), createdAt: now() };
+  job.testRuns.push(testRun);
+  job.status = testRun.passed ? 'review' : 'changes_requested';
+  return { ok: true, job, testRun };
+}
+
+/** An approval is the only path from review to completion. */
+export function recordReviewDecision(board, jobId, input = {}) {
+  const job = board.jobs.find(item => item.id === jobId);
+  if (!job) return failure('job_not_found', 'This job is no longer on the board.');
+  if (job.status !== 'review') return failure('job_not_in_review', 'This job needs a passing test before review.');
+  if (!record(input) || typeof input.approved !== 'boolean'
+      || !text(input.notes ?? '', CHECK_LIMITS.notes, false)
+      || (!input.approved && !(input.notes ?? '').trim())) {
+    return failure('invalid_review', 'Choose approval or changes and add feedback when requesting changes (up to 2,000 characters).');
+  }
+  const review = { approved: input.approved, notes: (input.notes ?? '').trim(), createdAt: now() };
+  job.reviews.push(review);
+  if (review.approved) {
+    job.status = 'completed';
+    job.completedAt = review.createdAt;
+    const agent = board.agents.find(item => item.id === job.claimedBy);
+    agent.status = 'idle';
+    agent.jobId = null;
+  } else job.status = 'changes_requested';
+  return { ok: true, job, review };
+}
+
+/** The assigned agent may revise a failed test or a declined review. */
+export function resumeJob(board, jobId, agentId) {
+  const result = ownedAssignment(board, jobId, agentId, ['changes_requested']);
+  if (!result.ok) return result;
+  result.job.status = 'in_progress';
+  return result;
+}
+
 export function summarizeJobs(board) {
   return {
     available: board.jobs.filter(job => job.status === 'available').length,
     inProgress: board.jobs.filter(job => job.status === 'in_progress').length,
+    testing: board.jobs.filter(job => job.status === 'testing').length,
+    review: board.jobs.filter(job => job.status === 'review').length,
+    changesRequested: board.jobs.filter(job => job.status === 'changes_requested').length,
     completed: board.jobs.filter(job => job.status === 'completed').length,
     total: board.jobs.length,
     idleAgents: board.agents.filter(agent => agent.status === 'idle').length,
@@ -132,7 +191,7 @@ export function setAgentRest(board, agentId, mode = 'relaxing') {
   const agent = board.agents.find(item => item.id === agentId);
   if (!agent) return failure('agent_not_found', 'This agent is not registered on the island.');
   if (agent.status === 'busy' || agent.jobId !== null
-      || board.jobs.some(job => job.status === 'in_progress' && job.claimedBy === agentId)) {
+      || board.jobs.some(job => ACTIVE_JOB_STATUSES.has(job.status) && job.claimedBy === agentId)) {
     return failure('agent_busy', 'Finish or return the current job before taking a break.');
   }
   agent.status = mode;
@@ -143,7 +202,7 @@ export function wakeAgent(board, agentId) {
   const agent = board.agents.find(item => item.id === agentId);
   if (!agent) return failure('agent_not_found', 'This agent is not registered on the island.');
   if (agent.status === 'busy' || agent.jobId !== null
-      || board.jobs.some(job => job.status === 'in_progress' && job.claimedBy === agentId)) {
+      || board.jobs.some(job => ACTIVE_JOB_STATUSES.has(job.status) && job.claimedBy === agentId)) {
     return failure('agent_busy', 'This agent is working on a job. Finish or return it first.');
   }
   agent.status = 'idle';
@@ -187,7 +246,7 @@ export function summarizeHelpdesk(board) {
 }
 
 function validatedBoard(value) {
-  if (!record(value) || value.version !== 1 || !Array.isArray(value.jobs) || !Array.isArray(value.agents)) return null;
+  if (!record(value) || ![1, 2].includes(value.version) || !Array.isArray(value.jobs) || !Array.isArray(value.agents)) return null;
   if (value.helpRequests !== undefined && !Array.isArray(value.helpRequests)) return null;
   const board = createJobBoard();
   const agents = new Map();
@@ -211,12 +270,33 @@ function validatedBoard(value) {
         || !(item.claimedAt === null || timestamp(item.claimedAt))
         || !(item.completedAt === null || timestamp(item.completedAt))
         || !(item.claimedBy === null || identifier(item.claimedBy))) return null;
+    const legacy = value.version === 1;
+    if (legacy && !['available', 'in_progress', 'completed'].includes(item.status)) return null;
+    if (!legacy && (!Array.isArray(item.testRuns) || !Array.isArray(item.reviews)
+        || typeof item.legacyCompletion !== 'boolean')) return null;
+    const testRuns = legacy ? [] : item.testRuns;
+    const reviews = legacy ? [] : item.reviews;
+    if (!testRuns.every(run => record(run) && typeof run.passed === 'boolean'
+        && text(run.notes, CHECK_LIMITS.notes, false)
+        && (run.passed || !!run.notes.trim())
+        && timestamp(run.createdAt) && Date.parse(run.createdAt) >= Date.parse(item.createdAt))) return null;
+    if (!reviews.every(review => record(review) && typeof review.approved === 'boolean'
+        && text(review.notes, CHECK_LIMITS.notes, false)
+        && (review.approved || !!review.notes.trim())
+        && timestamp(review.createdAt) && Date.parse(review.createdAt) >= Date.parse(item.createdAt))) return null;
+    const lastTest = testRuns.at(-1);
+    const lastReview = reviews.at(-1);
+    const legacyCompletion = legacy ? item.status === 'completed' : item.legacyCompletion;
+    if (legacyCompletion && (item.status !== 'completed' || testRuns.length || reviews.length)) return null;
+    if (item.status === 'review' && !lastTest?.passed) return null;
+    if (item.status === 'changes_requested' && lastTest?.passed !== false && lastReview?.approved !== false) return null;
+    if (item.status === 'completed' && !legacyCompletion && (!lastTest?.passed || !lastReview?.approved)) return null;
     if (item.status === 'available') {
       if (item.claimedBy !== null || item.claimedAt !== null || item.completedAt !== null) return null;
     } else {
       if (!agents.has(item.claimedBy) || !timestamp(item.claimedAt)
           || Date.parse(item.claimedAt) < Date.parse(item.createdAt)) return null;
-      if (item.status === 'in_progress' && item.completedAt !== null) return null;
+      if (ACTIVE_JOB_STATUSES.has(item.status) && item.completedAt !== null) return null;
       if (item.status === 'completed' && (!timestamp(item.completedAt)
           || Date.parse(item.completedAt) < Date.parse(item.claimedAt))) return null;
     }
@@ -224,13 +304,16 @@ function validatedBoard(value) {
       id: item.id, title: item.title.trim(), description: item.description.trim(), priority: item.priority,
       status: item.status, claimedBy: item.claimedBy, createdAt: item.createdAt,
       claimedAt: item.claimedAt, completedAt: item.completedAt,
+      testRuns: testRuns.map(run => ({ passed: run.passed, notes: run.notes.trim(), createdAt: run.createdAt })),
+      reviews: reviews.map(review => ({ approved: review.approved, notes: review.notes.trim(), createdAt: review.createdAt })),
+      legacyCompletion,
     };
     jobs.set(job.id, job);
     board.jobs.push(job);
   }
   const assigned = new Set();
   for (const job of board.jobs) {
-    if (job.status !== 'in_progress') continue;
+    if (!ACTIVE_JOB_STATUSES.has(job.status)) continue;
     const agent = agents.get(job.claimedBy);
     if (assigned.has(agent.id) || agent.status !== 'busy' || agent.jobId !== job.id) return null;
     assigned.add(agent.id);
@@ -238,7 +321,7 @@ function validatedBoard(value) {
   for (const agent of board.agents) {
     if (agent.status !== 'busy') continue;
     const job = jobs.get(agent.jobId);
-    if (!job || job.status !== 'in_progress' || job.claimedBy !== agent.id) return null;
+    if (!job || !ACTIVE_JOB_STATUSES.has(job.status) || job.claimedBy !== agent.id) return null;
   }
   const requestIds = new Set();
   for (const item of value.helpRequests ?? []) {

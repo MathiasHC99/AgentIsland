@@ -8,6 +8,7 @@
   <title>AgentIsland — A little world</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./player.css">
 </head>
 <body>
   <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -27,6 +28,8 @@
       <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
       <symbol id="i-helpdesk" viewBox="0 0 24 24"><path d="M3 10a9 9 0 0 1 18 0v6a3 3 0 0 1-3 3h-3M3 10h3v7H3zM18 10h3v7h-3zM10 20h5M9.5 7.5a2.5 2.5 0 0 1 5 .5c0 2-2.5 2-2.5 4m0 3h.01"/></symbol>
       <symbol id="i-spa" viewBox="0 0 24 24"><path d="M3 13c0 6 4 8 9 8s9-2 9-8M2 13h20M7 10c-3-3 3-3 0-6m5 6c-3-3 3-3 0-6m5 6c-3-3 3-3 0-6"/></symbol>
+      <symbol id="i-test" viewBox="0 0 24 24"><path d="M7 3h10v3H7zM6 5H4v16h16V5h-2M8 11l2 2 4-4M8 17h8"/></symbol>
+      <symbol id="i-review" viewBox="0 0 24 24"><path d="M4 3h12l4 4v14H4zM16 3v5h4M8 12h8M8 16h5M15 17l2 2 4-4"/></symbol>
     </defs>
   </svg>
 
@@ -41,6 +44,7 @@
       </a>
       <div class="top-actions">
         <span class="preview-badge"><i></i> World preview</span>
+        <button id="play-toggle" class="play-toggle" aria-pressed="false" title="Explore in first person (V)">Enter island</button>
         <button id="help-button" class="round-button" aria-label="Show controls" aria-expanded="false" aria-controls="help-panel"><svg><use href="#i-help"/></svg></button>
       </div>
     </header>
@@ -54,14 +58,17 @@
         <button id="open-workbench" class="station-link" aria-haspopup="dialog" aria-controls="workbench-panel"><svg><use href="#i-workbench"/></svg><span>Workbench <small>HEX 01 · START</small></span><span id="station-job-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
         <button id="open-helpdesk" class="station-link helpdesk-link" aria-haspopup="dialog" aria-controls="helpdesk-panel"><svg><use href="#i-helpdesk"/></svg><span>Helpdesk <small>A LITTLE SUPPORT</small></span><span id="helpdesk-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
         <button id="open-spa" class="station-link spa-link" aria-haspopup="dialog" aria-controls="spa-panel"><svg><use href="#i-spa"/></svg><span>Spa <small>REST & RECHARGE</small></span><span id="spa-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+        <button id="open-test" class="station-link test-link" aria-haspopup="dialog" aria-controls="test-panel"><svg><use href="#i-test"/></svg><span>Tests <small>CHECK THE WORK</small></span><span id="test-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
+        <button id="open-review" class="station-link review-link" aria-haspopup="dialog" aria-controls="review-panel"><svg><use href="#i-review"/></svg><span>Reviews <small>FINAL DECISION</small></span><span id="review-count" class="station-job-count">0</span><span aria-hidden="true">↗</span></button>
       </nav>
     </aside>
 
     <section id="help-panel" class="help-panel" aria-label="Island controls" hidden>
       <div class="panel-heading"><strong>Make yourself at home</strong><button id="close-help" class="text-button" aria-label="Close controls">×</button></div>
       <p>Drag the water to wander. Scroll or pinch to get a little closer.</p>
-      <dl><div><dt>1 · Wander</dt><dd>Tap any station to visit: the workbench for jobs, helpdesk for questions, or spa for a break.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
-      <p class="help-note">A visual first step for AgentIsland. Changes stay for this visit.</p>
+      <dl><div><dt>1 · Wander</dt><dd>Tap a station: workbench for jobs, test station for checks, review station for approval, helpdesk for questions, or spa for a break.</dd></div><div><dt>2 · Add land</dt><dd>Choose a patch, then tap a + at the shore.</dd></div><div><dt>3 · Paint</dt><dd>Give an existing hexagon a new look.</dd></div><div><dt>Arrow keys</dt><dd>Pan the world. + / − to zoom. Home to recenter.</dd></div></dl>
+      <p><strong>Enter island · V</strong><br>Walk in first person with W A S D. Hold Shift to run, press Space to jump, and use the mouse or arrow keys to look. Press E near a station to visit. Esc releases the mouse; V returns to the island view.</p>
+      <p class="help-note">On touch screens, use the direction buttons to walk and drag the scenery to look. Moss and Pip are demo companions. Changes stay for this visit.</p>
     </section>
 
     <div id="tile-label" class="tile-label" aria-live="polite" hidden><span class="tile-dot"></span><span id="tile-name">Meadow</span></div>
@@ -101,6 +108,16 @@
 
     <footer class="world-footer"><span class="world-status"><i></i> A quiet place to start</span><button id="motion-toggle" class="motion-toggle" aria-pressed="true">Breeze on</button></footer>
     <div id="announcement" class="announcement" role="status" aria-live="polite"></div>
+    <section id="player-hud" class="player-hud" aria-label="Player controls" hidden>
+      <div class="player-crosshair" aria-hidden="true"></div>
+      <div class="player-caption"><span class="player-eyebrow">ON THE ISLAND</span><strong id="player-location">Hex 01 · Meadow</strong><span>W A S D walk · Shift run · Space jump</span><span id="player-look-hint">Drag to look · Arrow keys to look · V island view</span><small>Moss & Pip are demo companions</small></div>
+      <button id="player-interact" class="player-interact" hidden>Visit station · E</button>
+      <button id="player-resume" class="player-resume" hidden>Resume exploring <span>Click to capture the mouse, or drag to look</span></button>
+      <div class="touch-walk" role="group" aria-label="Walk around">
+        <button data-walk="KeyW" aria-label="Walk forward">↑</button><button data-walk="KeyA" aria-label="Step left">←</button><button data-walk="KeyS" aria-label="Walk backward">↓</button><button data-walk="KeyD" aria-label="Step right">→</button>
+      </div>
+      <div class="touch-actions"><button id="player-jump">Jump</button><button id="player-sprint" aria-pressed="false">Run</button></div>
+    </section>
     <dialog id="workbench-panel" class="workbench-panel" aria-labelledby="workbench-title" aria-describedby="workbench-description">
       <div class="workbench-topline"><span class="station-eyebrow">STATION 01 <i></i> THE START</span><button id="close-workbench" class="round-button" aria-label="Close workbench">×</button></div>
       <div class="workbench-heading"><span class="workbench-emblem"><svg><use href="#i-workbench"/></svg></span><div><h2 id="workbench-title">The workbench</h2><p id="workbench-description">Good work starts with a little note.</p></div></div>
@@ -156,6 +173,24 @@
       </section>
       <p id="spa-feedback" class="board-feedback" role="status" aria-live="polite"></p>
       <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+    </dialog>
+    <dialog id="test-panel" class="workbench-panel quality-panel test-panel" aria-labelledby="test-title" aria-describedby="test-description">
+      <div class="workbench-topline"><span class="station-eyebrow">THE TEST STATION <i></i> CHECK THE WORK</span><button id="close-test" class="round-button" aria-label="Close test station">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem test-emblem"><svg><use href="#i-test"/></svg></span><div><h2 id="test-title">The test station</h2><p id="test-description">Give each submitted job a clear test result.</p></div></div>
+      <div class="quality-summary"><strong id="test-pending-count">0</strong> awaiting tests <span class="preview-tag">MANUAL PREVIEW</span></div>
+      <p class="quality-intro">Record what you checked. A pass moves the job to review; a failure sends it back for changes.</p>
+      <div id="test-list" class="quality-list" aria-live="polite"></div>
+      <p id="test-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser. Real agents are not connected yet.</span></div>
+    </dialog>
+    <dialog id="review-panel" class="workbench-panel quality-panel review-panel" aria-labelledby="review-title" aria-describedby="review-description">
+      <div class="workbench-topline"><span class="station-eyebrow">THE REVIEW STATION <i></i> FINAL DECISION</span><button id="close-review" class="round-button" aria-label="Close review station">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem review-emblem"><svg><use href="#i-review"/></svg></span><div><h2 id="review-title">The review station</h2><p id="review-description">Decide whether tested work is ready to finish.</p></div></div>
+      <div class="quality-summary"><strong id="review-pending-count">0</strong> awaiting review <span class="preview-tag">MANUAL PREVIEW</span></div>
+      <p class="quality-intro">Read the test result, then approve the job or request changes with feedback.</p>
+      <div id="review-list" class="quality-list" aria-live="polite"></div>
+      <p id="review-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div class="board-footer"><span class="local-indicator"></span><span data-quality-storage>Saved in this browser. Real agents are not connected yet.</span></div>
     </dialog>
     <noscript><div class="no-script">This little island needs JavaScript. Enable it to explore the world.</div></noscript>
   </main>

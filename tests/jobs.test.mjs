@@ -4,6 +4,7 @@ import {
   createJobBoard, registerAgent, postJob, claimJob, completeJob,
   releaseJob, summarizeJobs, serializeJobBoard, restoreJobBoard,
   setAgentRest, wakeAgent, postHelpRequest, resolveHelpRequest, summarizeHelpdesk,
+  submitJobForTesting, recordTestResult, recordReviewDecision, resumeJob,
 } from '../dist/jobs.js';
 
 function fixture() {
@@ -13,6 +14,12 @@ function fixture() {
   const first = postJob(board, { title: 'Plan the island', description: 'Find space for the next station.', priority: 'high' }).job;
   const second = postJob(board, { title: 'Collect ideas' }).job;
   return { board, alice, bob, first, second };
+}
+
+function finishThroughReview(board, job, agent) {
+  assert.equal(submitJobForTesting(board, job.id, agent.id).ok, true);
+  assert.equal(recordTestResult(board, job.id, { passed: true, notes: 'Checks passed' }).ok, true);
+  assert.equal(recordReviewDecision(board, job.id, { approved: true, notes: 'Approved' }).ok, true);
 }
 
 test('jobs start available with stable unique identities and normalized text', () => {
@@ -26,7 +33,7 @@ test('jobs start available with stable unique identities and normalized text', (
   assert.equal(first.priority, 'normal');
   assert.equal(first.claimedBy, null);
   assert.ok(Number.isFinite(Date.parse(first.createdAt)));
-  assert.deepEqual(summarizeJobs(board), { available: 2, inProgress: 0, completed: 0, total: 2, idleAgents: 0, busyAgents: 0 });
+  assert.deepEqual(summarizeJobs(board), { available: 2, inProgress: 0, testing: 0, review: 0, changesRequested: 0, completed: 0, total: 2, idleAgents: 0, busyAgents: 0 });
 });
 
 test('competing claims award one job once and leave the other agent idle', () => {
@@ -60,7 +67,8 @@ test('completion and return require ownership and return agents to idle', () => 
   assert.equal(completeJob(board, first.id, bob.id).reason, 'not_job_owner');
   assert.equal(releaseJob(board, first.id, bob.id).reason, 'not_job_owner');
   assert.deepEqual(board, claimed);
-  assert.equal(completeJob(board, first.id, alice.id).ok, true);
+  assert.equal(completeJob(board, first.id, alice.id).reason, 'review_required');
+  finishThroughReview(board, first, alice);
   assert.equal(first.status, 'completed');
   assert.equal(first.claimedBy, alice.id);
   assert.ok(first.completedAt);
@@ -75,7 +83,7 @@ test('completion and return require ownership and return agents to idle', () => 
   assert.equal(second.claimedAt, null);
   assert.equal(alice.status, 'idle');
   assert.equal(claimJob(board, second.id, bob.id).ok, true);
-  assert.deepEqual(summarizeJobs(board), { available: 0, inProgress: 1, completed: 1, total: 2, idleAgents: 1, busyAgents: 1 });
+  assert.deepEqual(summarizeJobs(board), { available: 0, inProgress: 1, testing: 0, review: 0, changesRequested: 0, completed: 1, total: 2, idleAgents: 1, busyAgents: 1 });
 });
 
 test('invalid posting, registration, and unknown identities do not mutate the board', () => {
@@ -97,7 +105,7 @@ test('invalid posting, registration, and unknown identities do not mutate the bo
 test('restoring a board preserves completed history and current assignments independently', () => {
   const { board, alice, first, second } = fixture();
   claimJob(board, first.id, alice.id);
-  completeJob(board, first.id, alice.id);
+  finishThroughReview(board, first, alice);
   claimJob(board, second.id, alice.id);
   const serialized = serializeJobBoard(board);
   const restored = restoreJobBoard(serialized);
@@ -113,7 +121,7 @@ test('corrupt storage rejects malformed schemas, duplicate IDs, and inconsistent
   const { board, alice, first } = fixture();
   claimJob(board, first.id, alice.id);
   const corruptions = [
-    data => { data.version = 2; },
+    data => { data.version = 3; },
     data => { data.jobs.push({ ...data.jobs[0] }); },
     data => { data.agents.push({ ...data.agents[0] }); },
     data => { data.jobs[0].claimedBy = 'missing'; },
@@ -155,7 +163,7 @@ test('spa rest blocks pickup and cannot interrupt an existing job', () => {
   assert.equal(setAgentRest(board, alice.id, 'sleeping').reason, 'agent_busy');
   assert.equal(wakeAgent(board, alice.id).reason, 'agent_busy');
   assert.deepEqual(board, before);
-  assert.equal(completeJob(board, first.id, alice.id).ok, true);
+  finishThroughReview(board, first, alice);
   assert.equal(setAgentRest(board, alice.id).ok, true);
   assert.equal(alice.status, 'relaxing');
   assert.equal(setAgentRest(board, 'missing').reason, 'agent_not_found');
@@ -190,6 +198,12 @@ test('older saved workbenches migrate without dropping existing jobs or assignme
   const { board, alice, first } = fixture();
   claimJob(board, first.id, alice.id);
   const legacy = structuredClone(board);
+  legacy.version = 1;
+  for (const job of legacy.jobs) {
+    delete job.testRuns;
+    delete job.reviews;
+    delete job.legacyCompletion;
+  }
   delete legacy.helpRequests;
   const restored = restoreJobBoard(JSON.stringify(legacy));
   assert.deepEqual(restored.jobs, board.jobs);
@@ -232,4 +246,67 @@ test('invalid questions and inconsistent stored rest/help states are rejected', 
   hiddenAssignment.agents[0].status = 'relaxing';
   hiddenAssignment.agents[0].jobId = null;
   assert.deepEqual(restoreJobBoard(JSON.stringify(hiddenAssignment)), createJobBoard());
+});
+
+test('test and review stations gate completion and retain a revision trail', () => {
+  const { board, alice, first, second } = fixture();
+  claimJob(board, first.id, alice.id);
+  assert.equal(recordTestResult(board, first.id, { passed: true }).reason, 'job_not_testing');
+  assert.equal(recordReviewDecision(board, first.id, { approved: true }).reason, 'job_not_in_review');
+  assert.equal(submitJobForTesting(board, first.id, 'bob').reason, 'not_job_owner');
+  assert.equal(submitJobForTesting(board, first.id, alice.id).ok, true);
+  assert.equal(first.status, 'testing');
+  assert.equal(alice.status, 'busy');
+  assert.equal(claimJob(board, second.id, alice.id).reason, 'agent_busy');
+  assert.equal(setAgentRest(board, alice.id).reason, 'agent_busy');
+  assert.equal(recordTestResult(board, first.id, { passed: false, notes: '  ' }).reason, 'invalid_test_result');
+  assert.equal(recordTestResult(board, first.id, { passed: false, notes: '  Missing coverage  ' }).ok, true);
+  assert.equal(first.status, 'changes_requested');
+  assert.equal(first.testRuns[0].notes, 'Missing coverage');
+  assert.equal(resumeJob(board, first.id, alice.id).ok, true);
+  assert.equal(first.status, 'in_progress');
+  assert.equal(submitJobForTesting(board, first.id, alice.id).ok, true);
+  assert.equal(recordTestResult(board, first.id, { passed: true, notes: 'Covered now' }).ok, true);
+  assert.equal(first.status, 'review');
+  assert.equal(recordReviewDecision(board, first.id, { approved: false, notes: '' }).reason, 'invalid_review');
+  assert.equal(recordReviewDecision(board, first.id, { approved: false, notes: '  Clarify the result  ' }).ok, true);
+  assert.equal(first.status, 'changes_requested');
+  assert.equal(first.reviews[0].notes, 'Clarify the result');
+  assert.equal(resumeJob(board, first.id, alice.id).ok, true);
+  assert.equal(submitJobForTesting(board, first.id, alice.id).ok, true);
+  assert.equal(recordTestResult(board, first.id, { passed: true }).ok, true);
+  assert.equal(recordReviewDecision(board, first.id, { approved: true, notes: 'Looks good' }).ok, true);
+  assert.equal(first.status, 'completed');
+  assert.equal(alice.status, 'idle');
+  assert.equal(alice.jobId, null);
+  assert.equal(first.testRuns.length, 3);
+  assert.equal(first.reviews.length, 2);
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
+});
+
+test('requested changes can be returned; legacy completions migrate without invented reviews', () => {
+  const { board, alice, bob, first } = fixture();
+  claimJob(board, first.id, alice.id);
+  submitJobForTesting(board, first.id, alice.id);
+  recordTestResult(board, first.id, { passed: false, notes: 'Broken' });
+  assert.equal(releaseJob(board, first.id, alice.id).ok, true);
+  assert.equal(first.status, 'available');
+  assert.equal(first.testRuns.length, 1);
+  assert.equal(claimJob(board, first.id, bob.id).ok, true);
+  assert.equal(resumeJob(board, first.id, bob.id).reason, 'job_not_in_progress');
+  finishThroughReview(board, first, bob);
+
+  const old = structuredClone(board);
+  old.version = 1;
+  for (const job of old.jobs) {
+    delete job.testRuns;
+    delete job.reviews;
+    delete job.legacyCompletion;
+  }
+  const migrated = restoreJobBoard(JSON.stringify(old));
+  assert.equal(migrated.version, 2);
+  assert.equal(migrated.jobs[0].status, 'completed');
+  assert.equal(migrated.jobs[0].legacyCompletion, true);
+  assert.deepEqual(migrated.jobs[0].reviews, []);
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(migrated)), migrated);
 });

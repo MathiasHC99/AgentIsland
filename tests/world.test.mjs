@@ -43,7 +43,7 @@ test('all six neighbors project to touching hex centers at every radius', () => 
   }
 });
 
-test('all three stations have distinct anchored tiles and survive paint and expansion', () => {
+test('all five stations have distinct anchored tiles and survive paint and expansion', () => {
   const world = createWorld();
   const previous = Object.entries(STATIONS).map(([id, position]) => {
     const tile = world.get(hexKey(position.q, position.r));
@@ -51,7 +51,8 @@ test('all three stations have distinct anchored tiles and survive paint and expa
     assert.ok(tile.number > 0);
     return { ...tile };
   });
-  assert.equal(new Set(previous.map(tile => hexKey(tile.q, tile.r))).size, 3);
+  assert.equal(previous.length, 5);
+  assert.equal(new Set(previous.map(tile => hexKey(tile.q, tile.r))).size, 5);
   assert.equal(previous[0].number, 1);
   for (const tile of previous) {
     const painted = paintTile(world, tile.q, tile.r, 'grove');

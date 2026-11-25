@@ -3,6 +3,8 @@ import { IslandRenderer } from './renderer.js';
 import { initWorkbench } from './workbench.js';
 import { createBoardStore } from './board-store.js';
 import { initStations } from './station-ui.js';
+import { initQualityStations } from './quality-ui.js';
+import { IslandExplorer } from './explorer.js';
 
 const $ = selector => document.querySelector(selector);
 const canvas = $('#island');
@@ -17,6 +19,8 @@ let motion = !reducedMotion.matches;
 let announcementTimer;
 let workbench;
 let stations;
+let qualityStations;
+let explorer;
 const boardStore = createBoardStore();
 
 function announce(message) {
@@ -37,7 +41,8 @@ const renderer = new IslandRenderer(canvas, {
   onTileClick(tile) {
     if (tool === 'explore' && tile.station) {
       if (tile.station === 'workbench') workbench.open();
-      else stations.open(tile.station);
+      else if (tile.station === 'helpdesk' || tile.station === 'spa') stations.open(tile.station);
+      else qualityStations.open(tile.station);
       return;
     }
     if (tool !== 'paint' || tile.terrain === terrain) return;
@@ -67,14 +72,17 @@ const renderer = new IslandRenderer(canvas, {
 });
 
 function prepareStation() {
+  explorer?.pause();
   document.querySelectorAll('dialog[open]').forEach(panel => panel.close());
   showHelp(false);
   setTool('explore');
 }
 workbench = initWorkbench({ renderer, store: boardStore, onBeforeOpen: prepareStation });
 stations = initStations({ renderer, store: boardStore, onBeforeOpen: prepareStation, openWorkbench: () => workbench.open() });
+qualityStations = initQualityStations({ renderer, store: boardStore, onBeforeOpen: prepareStation });
 
 function setTool(next) {
+  if (explorer?.active && next !== 'explore') explorer.exit();
   tool = next;
   renderer.setTool(next);
   document.querySelectorAll('[data-tool]').forEach(button => {
@@ -126,6 +134,7 @@ function updateMotion() {
 $('#motion-toggle').addEventListener('click', () => { motion = !motion; updateMotion(); });
 reducedMotion.addEventListener('change', event => { motion = !event.matches; updateMotion(); });
 function showHelp(show) {
+  if (show) explorer?.pause();
   $('#help-panel').hidden = !show;
   $('#help-button').setAttribute('aria-expanded', String(show));
 }
@@ -135,6 +144,10 @@ document.addEventListener('keydown', event => {
   const openPanel = document.querySelector('dialog[open]');
   if (openPanel) {
     if (event.key === 'Escape') { event.preventDefault(); openPanel.close(); }
+    return;
+  }
+  if (explorer?.active) {
+    if (event.key === '?' && !event.repeat) showHelp($('#help-panel').hidden);
     return;
   }
   if (event.target.matches('input,textarea,select') || event.altKey) return;
@@ -153,5 +166,15 @@ document.addEventListener('keydown', event => {
 });
 
 refreshWorld();
+explorer = new IslandExplorer(renderer, {
+  onEnter() { document.querySelectorAll('dialog[open]').forEach(panel => panel.close()); showHelp(false); setTool('explore'); },
+  openStation(station) {
+    if (station === 'workbench') workbench.open();
+    else if (station === 'helpdesk' || station === 'spa') stations.open(station);
+    else qualityStations.open(station);
+  },
+});
+explorer.setBoard(boardStore.getBoard());
+const unsubscribeExplorer = boardStore.subscribe(board => explorer.setBoard(board));
 updateMotion();
-window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); workbench.destroy(); stations.destroy(); boardStore.destroy(); renderer.destroy(); }, { once: true });
+window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); unsubscribeExplorer(); explorer.destroy(); workbench.destroy(); stations.destroy(); qualityStations.destroy(); boardStore.destroy(); renderer.destroy(); }, { once: true });
