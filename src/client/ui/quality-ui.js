@@ -1,4 +1,4 @@
-import { recordTestResult, recordReviewDecision } from './jobs.js';
+import { recordTestResult, recordReviewDecision } from '../domain/jobs.js';
 import { appendTeamOutput } from './team-ui.js';
 
 const $ = selector => document.querySelector(selector);

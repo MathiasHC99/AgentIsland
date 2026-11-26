@@ -1,6 +1,6 @@
 import { IslandPlayer, canOccupy, tileAt } from './player.js';
 import { axialToWorld, STATIONS } from './world.js';
-import { TEAM_AGENT_ID, TEAM_STAGES } from './jobs.js';
+import { TEAM_AGENT_ID, TEAM_STAGES } from '../domain/jobs.js';
 
 const specialists = [
   { name: 'Writer', stage: 'draft', station: 'workbench', color: '#a46b4b', light: '#f0c698', offset: -.66 },
@@ -25,6 +25,8 @@ export class IslandExplorer {
     this.clock = 0;
     this.boardAgents = [];
     this.boardJobs = [];
+    this.boardHelpRequests = [];
+    this.dreaming = false;
     this.player = new IslandPlayer(renderer.world);
     this.companions = [];
     renderer.explorer = this;
@@ -64,6 +66,12 @@ export class IslandExplorer {
   setBoard(board) {
     this.boardAgents = board.agents;
     this.boardJobs = board.jobs;
+    this.boardHelpRequests = board.helpRequests;
+    this.renderer.invalidate();
+  }
+
+  setDreaming(active) {
+    this.dreaming = !!active;
     this.renderer.invalidate();
   }
 
@@ -74,6 +82,15 @@ export class IslandExplorer {
       const valid = canOccupy(this.renderer.world, this.player.obstacles, x, y);
       return { ...actor, x: valid ? x : actor.home.x, y: valid ? y : actor.home.y, moving: this.renderer.motion };
     });
+    const dreamerHome = axialToWorld(STATIONS.spa.q, STATIONS.spa.r);
+    actors.push({ name: this.dreaming ? 'Dreamer · dreaming' : 'Dreamer · relaxing',
+      x: dreamerHome.x - .64, y: dreamerHome.y + .48, color: '#8f75aa', light: '#e4cbed',
+      phase: 1.4, moving: false, status: this.dreaming ? 'working' : 'idle' });
+    const helpdeskHome = axialToWorld(STATIONS.helpdesk.q, STATIONS.helpdesk.r);
+    const helping = this.boardHelpRequests.some(request => request.helperStatus === 'working');
+    actors.push({ name: helping ? 'Helpdesk agent · helping' : 'Helpdesk agent · available',
+      x: helpdeskHome.x + .64, y: helpdeskHome.y + .45, color: '#5c8991', light: '#c4e4e1',
+      phase: .8, moving: false, status: helping ? 'working' : 'idle' });
     for (const [index, agent] of this.boardAgents.entries()) {
       const resting = ['relaxing', 'sleeping'].includes(agent.status);
       const assigned = this.boardJobs.find(job => job.id === agent.jobId);
@@ -84,9 +101,10 @@ export class IslandExplorer {
         for (const specialist of specialists) {
           const site = STATIONS[specialist.station];
           const center = axialToWorld(site.q, site.r);
-          const duty = nextStage === specialist.stage ? 'assigned' : 'standby';
+          const working = nextStage === specialist.stage;
+          const duty = working ? 'working' : 'standby';
           actors.push({ ...specialist, name: specialist.name + ' · ' + duty,
-            x: center.x + specialist.offset, y: center.y + .58, phase: 0, moving: false });
+            x: center.x + specialist.offset, y: center.y + .58, phase: 0, moving: false, status: working ? 'working' : 'idle' });
         }
       }
       const location = resting ? 'spa' : assigned?.status === 'testing' ? 'test' : assigned?.status === 'review' ? 'review' : 'workbench';
@@ -95,8 +113,9 @@ export class IslandExplorer {
       const angle = this.clock * .3 + index;
       const x = home.x + .76 * Math.cos(angle), y = home.y + .76 * Math.sin(angle);
       const valid = canOccupy(this.renderer.world, this.player.obstacles, x, y);
-      const activity = assigned?.status === 'testing' ? 'awaiting test' : assigned?.status === 'review' ? 'awaiting review' : agent.status;
-      actors.push({ name: `${agent.name} · ${activity}`, x: valid && agent.status === 'idle' ? x : home.x + .72, y: valid && agent.status === 'idle' ? y : home.y + .25, color: isLead ? '#675c8b' : '#829bab', light: isLead ? '#d7c3ec' : '#c0d7df', phase: index, moving: this.renderer.motion && agent.status === 'idle', status: agent.status });
+      const working = agent.status === 'busy' && (run?.status === 'running' || (run?.status === 'submitted' && ['testing', 'review'].includes(assigned?.status)) || (!isLead && assigned?.status === 'in_progress'));
+      const activity = working ? 'working' : assigned?.status === 'testing' ? 'awaiting test' : assigned?.status === 'review' ? 'awaiting review' : agent.status;
+      actors.push({ name: `${agent.name} · ${activity}`, x: valid && agent.status === 'idle' ? x : home.x + .72, y: valid && agent.status === 'idle' ? y : home.y + .25, color: isLead ? '#675c8b' : '#829bab', light: isLead ? '#d7c3ec' : '#c0d7df', phase: index, moving: this.renderer.motion && agent.status === 'idle', status: working ? 'working' : agent.status });
     }
     return actors;
   }

@@ -1,11 +1,28 @@
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { resolve, dirname, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
-import { handleAgentRequest } from './agent-api.mjs';
+import { handleAgentRequest } from './api.mjs';
+import { createTodoSeed } from '../../scripts/sync-todos.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), 'dist');
+const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const todoSeed = await createTodoSeed();
+try {
+  const localEnv = readFileSync(resolve(projectRoot, '.env'), 'utf8');
+  for (const line of localEnv.split(/\r?\n/)) {
+    const match = line.match(/^\s*(OPENAI_API_KEY|OPENAI_MODEL|OPENAI_MODELS|OLLAMA_BASE_URL|N8N_WEBHOOK_URL|N8N_WEBHOOK_TOKEN)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    const value = match[2];
+    process.env[match[1]] = /^(['"]).*\1$/.test(value) ? value.slice(1, -1) : value;
+  }
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
+process.env.OLLAMA_BASE_URL ||= 'http://127.0.0.1:11434';
+
+const root = resolve(projectRoot, 'src/client');
 const port = Number(process.env.PORT || 4173);
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 const server = createServer(async (request, response) => {
@@ -32,8 +49,13 @@ const server = createServer(async (request, response) => {
       response.end(await result.text());
       return;
     }
-    // Only the public top-level assets belong to the local static site.
-    if (pathname !== '/' && (!/^\/[\w.-]+$/.test(pathname) || !Object.hasOwn(types, extname(pathname)))) {
+    if (pathname === '/todo-seed.js') {
+      response.writeHead(200, { 'Content-Type': types['.js'], 'Cache-Control': 'no-cache' });
+      response.end(todoSeed);
+      return;
+    }
+    // Serve only client source assets with supported file types, including nested modules and styles.
+    if (pathname !== '/' && (!/^(?:\/[\w.-]+)+$/.test(pathname) || !Object.hasOwn(types, extname(pathname)))) {
       response.writeHead(404).end('Not found');
       return;
     }

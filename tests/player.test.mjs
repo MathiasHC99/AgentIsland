@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createWorld, axialToWorld, addTile } from '../dist/world.js';
-import { IslandPlayer, tileAt, canOccupy } from '../dist/player.js';
+import { createWorld, axialToWorld, addTile } from '../src/client/world/world.js';
+import { IslandPlayer, tileAt, canOccupy } from '../src/client/world/player.js';
 
 const step = (player, input, frames = 60) => { for (let i = 0; i < frames; i++) player.update(1 / 60, input); };
 

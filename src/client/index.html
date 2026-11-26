@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#d7ece3">
   <meta name="description" content="A tiny island with room to grow. Explore a playful world of grassy hexagons, little groves, and wildflowers.">
   <title>AgentIsland — A little world</title>
-  <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css">
-  <link rel="stylesheet" href="./player.css">
-  <link rel="stylesheet" href="./team.css">
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles/style.css">
+  <link rel="stylesheet" href="./styles/player.css">
+  <link rel="stylesheet" href="./styles/team.css">
 </head>
 <body>
   <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -37,6 +37,7 @@
   <main id="world" aria-label="Interactive island preview">
     <canvas id="island" aria-label="A miniature island made of grassy hexagons with trees and wildflowers. Drag to pan, scroll to zoom, or use the controls to add and paint land." tabindex="0"></canvas>
     <div class="vignette" aria-hidden="true"></div>
+    <div id="celebration" class="celebration" aria-hidden="true"><span>✦</span><span>✧</span><span>✦</span><span>✧</span><span>✦</span></div>
 
     <header class="topbar">
       <a class="brand" href="./" aria-label="AgentIsland home">
@@ -45,6 +46,7 @@
       </a>
       <div class="top-actions">
         <span class="preview-badge"><i></i> World preview</span>
+        <button id="open-showcase" class="showcase-open" type="button" aria-label="Open showcase" aria-haspopup="dialog" aria-controls="showcase-panel"><span aria-hidden="true">✦</span><span class="showcase-label">Showcase</span></button>
         <button id="play-toggle" class="play-toggle" aria-pressed="false" title="Explore in first person (V)">Enter island</button>
         <button id="help-button" class="round-button" aria-label="Show controls" aria-expanded="false" aria-controls="help-panel"><svg><use href="#i-help"/></svg></button>
       </div>
@@ -123,6 +125,7 @@
       <div class="workbench-topline"><span class="station-eyebrow">STATION 01 <i></i> THE START</span><button id="close-workbench" class="round-button" aria-label="Close workbench">×</button></div>
       <div class="workbench-heading"><span class="workbench-emblem"><svg><use href="#i-workbench"/></svg></span><div><h2 id="workbench-title">The workbench</h2><p id="workbench-description">Good work starts with a little note.</p></div></div>
       <div class="board-overview"><span><i></i><strong id="available-count">0</strong> available</span><span><strong id="progress-count">0</strong> in progress</span><button id="new-job-button" class="primary-button"><span aria-hidden="true">+</span> Post a job</button></div>
+      <button id="open-noticeboard" type="button" class="noticeboard-shortcut" aria-haspopup="dialog" aria-controls="noticeboard-panel"><span aria-hidden="true">▤</span> Open the Noticeboard <strong id="noticeboard-count">0</strong><span aria-hidden="true">↗</span></button>
 
       <form id="job-form" class="job-form" hidden>
         <div class="form-title"><h3>A new little undertaking</h3><button id="cancel-job" class="text-button" type="button" aria-label="Cancel new job">×</button></div>
@@ -133,8 +136,11 @@
 
       <section class="team-roster" aria-labelledby="team-heading">
         <h3 id="team-heading">AI team</h3>
-        <p>The lead assigns a writer and a checker, then submits the finished text to Tests.</p>
-        <p class="team-consent">Choose “Run with AI team” to send that job to OpenAI. Keep this tab open while the team works.</p>
+        <p>The lead, writer, checker, tester, and reviewer work through the job. If they need help, they ask the Helpdesk before contacting you.</p>
+        <p id="team-live-status" class="team-live-status" role="status">AI team available</p>
+        <p class="team-consent" id="team-consent">Choose a model, then run a job. Keep this tab open while the team works.</p>
+        <label class="team-model-label" for="team-model">Model</label>
+        <select id="team-model" class="team-model" disabled><option>Checking available models…</option></select>
         <div class="team-connection-row">
           <span id="team-connection" role="status">Checking model configuration…</span>
           <button type="button" id="team-refresh" class="team-link">Check again</button>
@@ -148,6 +154,22 @@
       <details id="pickup-preview" class="pickup-preview"><summary><span class="preview-spark" aria-hidden="true">✧</span> Try an agent pickup <span class="preview-tag">PREVIEW</span></summary><div class="pickup-preview-content"><p>A preview agent lets you try claiming and finishing a job. It does not run AI work.</p><div class="preview-agent"><span class="preview-avatar" aria-hidden="true">P</span><div><strong>Preview agent</strong><span id="preview-agent-status">Ready to try a job</span></div><button id="enable-preview" class="secondary-button">Enable</button></div></div></details>
       <p id="board-feedback" class="board-feedback" role="status" aria-live="polite"></p>
       <div class="board-footer"><span class="local-indicator"></span><span id="storage-status">Saved in this browser.</span></div>
+    </dialog>
+    <dialog id="noticeboard-panel" class="workbench-panel noticeboard-panel" aria-labelledby="noticeboard-title">
+      <div class="workbench-topline"><span class="station-eyebrow">THE NOTICEBOARD <i></i> WHAT IS NEXT</span><button id="close-noticeboard" class="round-button" aria-label="Close noticeboard">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem noticeboard-emblem">▤</span><div><h2 id="noticeboard-title">The Noticeboard</h2><p>Your project plan and new tasks from you and the agents.</p></div></div>
+      <form id="todo-form" class="job-form">
+        <label for="todo-title">Add something to do</label><input id="todo-title" maxlength="300" required placeholder="What needs doing?">
+        <label for="todo-details">Details <span>(optional)</span></label><textarea id="todo-details" maxlength="1000" rows="2" placeholder="Why or how should it be done?"></textarea>
+        <div class="noticeboard-actions"><button type="submit" class="primary-button">Pin a task</button><button id="agent-todos" type="button" class="secondary-button">Ask the agents for tasks</button></div>
+      </form>
+      <p id="todo-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+      <div id="todo-list" class="todo-list"></div>
+    </dialog>
+    <dialog id="showcase-panel" class="workbench-panel showcase-panel" aria-labelledby="showcase-title">
+      <div class="workbench-topline"><span class="station-eyebrow">MADE ON THE ISLAND <i></i> A LITTLE GALLERY</span><button id="close-showcase" class="round-button" aria-label="Close showcase">×</button></div>
+      <div class="workbench-heading"><span class="workbench-emblem">✦</span><div><h2 id="showcase-title">The showcase</h2><p>Finished projects live here. Open one to see what the team made.</p></div></div>
+      <div id="showcase-list" class="showcase-list"></div>
     </dialog>
     <dialog id="helpdesk-panel" class="workbench-panel helpdesk-panel" aria-labelledby="helpdesk-title" aria-describedby="helpdesk-description">
       <div class="workbench-topline"><span class="station-eyebrow">THE HELPDESK <i></i> A LITTLE SUPPORT</span><button id="close-helpdesk" class="round-button" aria-label="Close helpdesk">×</button></div>
@@ -182,6 +204,16 @@
         <button id="spa-enable-preview" class="primary-button">Invite the preview agent <span aria-hidden="true">↗</span></button>
         <div id="spa-actions" class="spa-actions" hidden><button id="spa-relax" class="spa-action"><svg><use href="#i-spa"/></svg><span>Relax</span><small>Take a breather</small></button><button id="spa-sleep" class="spa-action"><svg><use href="#i-moon"/></svg><span>Sleep</span><small>A little shut-eye</small></button><button id="spa-wake" class="spa-action"><svg><use href="#i-sun"/></svg><span>Wake up</span><small>Ready for more</small></button></div>
         <button id="spa-visit-workbench" class="spa-workbench-link" hidden>Visit the workbench <span aria-hidden="true">↗</span></button>
+      </section>
+      <section class="idea-garden spa-idea-garden" aria-labelledby="idea-garden-heading">
+        <div class="idea-garden-heading"><div><span class="station-eyebrow">A SEED OF AN IDEA</span><h3 id="idea-garden-heading">The Dreamer's Idea Garden</h3></div><button id="brainstorm-ideas" type="button" class="secondary-button">Dream up ideas</button></div>
+        <p id="dreamer-status" class="dreamer-status">The Dreamer is relaxing by the water, ready when you are.</p>
+        <p>The Dreamer can imagine small projects while the agents rest. Keep the Spa open while it thinks.</p>
+        <label class="team-model-label" for="dreamer-model">Dreamer model</label>
+        <select id="dreamer-model" class="team-model" disabled><option>Checking models…</option></select>
+        <label class="daily-ideas"><input id="daily-ideas" type="checkbox"> Let the Dreamer make ideas once a day when I visit the Spa (local Ollama only)</label>
+        <p id="idea-feedback" class="board-feedback" role="status" aria-live="polite"></p>
+        <div id="idea-list" class="idea-list"></div>
       </section>
       <p id="spa-feedback" class="board-feedback" role="status" aria-live="polite"></p>
       <div class="board-footer"><span class="local-indicator"></span><span data-station-storage>Saved in this browser.</span></div>

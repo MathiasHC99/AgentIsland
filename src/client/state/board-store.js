@@ -1,4 +1,5 @@
-import { createJobBoard, serializeJobBoard, restoreJobBoard } from './jobs.js';
+import { createJobBoard, serializeJobBoard, restoreJobBoard } from '../domain/jobs.js';
+import { snapshotJobs, jobEvents } from '../domain/notification-events.js';
 
 export const BOARD_STORAGE_KEY = 'agent-island.workbench.v1';
 
@@ -40,8 +41,14 @@ export function createBoardStore(options = {}) {
   async function perform(action) {
     if (destroyed) return { ok: false, reason: 'store_destroyed', message: 'This station is no longer open.' };
     read();
+    const before = options.onJobEvent ? snapshotJobs(board) : null;
     const result = await action(board);
-    if (result?.ok) save();
+    if (result?.ok) {
+      save();
+      if (before) for (const event of jobEvents(before, board)) {
+        try { void Promise.resolve(options.onJobEvent(event)).catch(() => {}); } catch { /* Notifications do not block job saves. */ }
+      }
+    }
     notify();
     return result;
   }

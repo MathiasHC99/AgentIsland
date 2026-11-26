@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createJobBoard, registerAgent, postJob, claimJob, completeJob,
+  createJobBoard, registerAgent, postJob, deleteJob, claimJob, completeJob,
   releaseJob, summarizeJobs, serializeJobBoard, restoreJobBoard,
-  setAgentRest, wakeAgent, postHelpRequest, resolveHelpRequest, summarizeHelpdesk,
+  setAgentRest, wakeAgent, postHelpRequest, claimAgentHelp, finishAgentHelp,
+  resolveHelpRequest, summarizeHelpdesk,
   submitJobForTesting, recordTestResult, recordReviewDecision, resumeJob,
-} from '../dist/jobs.js';
+} from '../src/client/domain/jobs.js';
 
 function fixture() {
   const board = createJobBoard();
@@ -58,6 +59,32 @@ test('busy agents cannot pick up another job and re-registering cannot reset the
   assert.equal(alice.status, 'busy');
   assert.equal(alice.name, 'Alice');
   assert.equal(board.agents.length, 2);
+});
+
+test('deleting a stuck assigned job frees its agent and keeps the board valid', () => {
+  const { board, alice, first, second } = fixture();
+  claimJob(board, first.id, alice.id);
+  submitJobForTesting(board, first.id, alice.id);
+  assert.equal(deleteJob(board, first.id).ok, true);
+  assert.equal(board.jobs.some(job => job.id === first.id), false);
+  assert.equal(alice.status, 'idle');
+  assert.equal(alice.jobId, null);
+  assert.equal(claimJob(board, second.id, alice.id).ok, true);
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
+  const before = structuredClone(board);
+  assert.equal(deleteJob(board, first.id).reason, 'job_not_found');
+  assert.deepEqual(board, before);
+});
+
+test('deleting a completed job preserves another active assignment', () => {
+  const { board, alice, first, second } = fixture();
+  claimJob(board, first.id, alice.id);
+  finishThroughReview(board, first, alice);
+  claimJob(board, second.id, alice.id);
+  assert.equal(deleteJob(board, first.id).ok, true);
+  assert.equal(alice.jobId, second.id);
+  assert.equal(alice.status, 'busy');
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
 });
 
 test('completion and return require ownership and return agents to idle', () => {
@@ -191,6 +218,34 @@ test('helpdesk posts and resolves questions without inventing replies or changin
   assert.equal(resolveHelpRequest(board, first.id).reason, 'request_resolved');
   assert.equal(resolveHelpRequest(board, 'missing').reason, 'request_not_found');
   assert.deepEqual(board.jobs, jobsBefore);
+  assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
+});
+
+test('older open agent questions join the Helpdesk agent queue after reload', () => {
+  const { board, first } = fixture();
+  const request = postHelpRequest(board, { title: 'Agent help: test 3', details: 'The final step timed out.',
+    author: 'Island lead', jobId: first.id }).request;
+  const legacy = JSON.parse(serializeJobBoard(board));
+  delete legacy.helpRequests[0].jobId;
+  delete legacy.helpRequests[0].helperStatus;
+  delete legacy.helpRequests[0].helperNote;
+  const restored = restoreJobBoard(JSON.stringify(legacy));
+  assert.equal(restored.helpRequests[0].id, request.id);
+  assert.equal(restored.helpRequests[0].helperStatus, 'queued');
+  assert.equal(restored.helpRequests[0].status, 'open');
+});
+
+test('the Helpdesk agent claims requests in order and cannot hold two at once', () => {
+  const board = createJobBoard();
+  const first = postHelpRequest(board, { title: 'First question' }).request;
+  const second = postHelpRequest(board, { title: 'Second question', author: 'Island lead' }).request;
+  assert.equal(first.helperStatus, 'queued');
+  assert.equal(second.helperStatus, 'queued');
+  assert.equal(claimAgentHelp(board, second.id).reason, 'help_waiting');
+  assert.equal(claimAgentHelp(board, first.id).ok, true);
+  assert.equal(claimAgentHelp(board, second.id).reason, 'helper_busy');
+  assert.equal(finishAgentHelp(board, first.id, { resolved: true, guidance: 'Start here.' }).ok, true);
+  assert.equal(claimAgentHelp(board, second.id).ok, true);
   assert.deepEqual(restoreJobBoard(serializeJobBoard(board)), board);
 });
 

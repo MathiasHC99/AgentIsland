@@ -1,12 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createJobBoard, postJob, registerAgent, claimJob, releaseJob, submitJobForTesting,
+  createJobBoard, postJob, deleteJob, registerAgent, claimJob, releaseJob, submitJobForTesting,
   recordTestResult, recordReviewDecision, serializeJobBoard, restoreJobBoard,
   TEAM_AGENT_ID, TEAM_STAGES, startTeamRun, saveTeamStep, stopTeamRun,
-} from '../dist/jobs.js';
+} from '../src/client/domain/jobs.js';
 
 const roundTrip = board => restoreJobBoard(serializeJobBoard(board));
+
+test('deleting a running AI job frees the lead and rejects late model output', () => {
+  const board = createJobBoard();
+  const job = postJob(board, { title: 'Old test job' }).job;
+  const next = postJob(board, { title: 'Next job' }).job;
+  startTeamRun(board, job.id, 'run-old');
+  assert.equal(deleteJob(board, job.id).ok, true);
+  assert.equal(board.agents.find(agent => agent.id === TEAM_AGENT_ID).status, 'idle');
+  assert.equal(saveTeamStep(board, job.id, 'run-old', 'plan', 'Late result').ok, false);
+  assert.equal(startTeamRun(board, next.id, 'run-new').ok, true);
+  assert.deepEqual(roundTrip(board), board);
+});
 
 test('the lead delegates in order, saves each contribution, and sends the final to manual testing', () => {
   const board = createJobBoard();

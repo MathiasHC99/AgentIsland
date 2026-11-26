@@ -1,6 +1,9 @@
 import {
-  TEAM_AGENT_ID, TEAM_STAGES, startTeamRun, saveTeamStep, stopTeamRun, releaseJob,
-} from './jobs.js';
+  TEAM_AGENT_ID, TEAM_STAGES, stopTeamRun, releaseJob,
+} from '../domain/jobs.js';
+import { appendArtifactActions } from './artifact-ui.js';
+import { runAutonomousJob } from '../agents/autonomous-team.js';
+import { smokeTestDeliverable } from '../agents/autonomous-check.js';
 
 const roles = {
   plan: { label: 'Lead · Assignment', activity: 'Lead is planning the job' },
@@ -8,6 +11,12 @@ const roles = {
   check: { label: 'Checker · Findings', activity: 'Checker is assessing the draft' },
   final: { label: 'Lead · Final result', activity: 'Lead is preparing the result' },
 };
+
+export function shouldAbortTeamRun(active, runState) {
+  return !!active?.claimed && (runState?.id !== active.id
+    || !['running', 'submitted', 'failed'].includes(runState.status)
+    || runState.status === 'failed' && runState.error?.startsWith('Stopped by you.'));
+}
 
 const node = (tag, className, content) => {
   const element = document.createElement(tag);
@@ -36,6 +45,7 @@ export function appendTeamOutput(card, job) {
   const output = node('section', 'team-output');
   if (run.final) {
     output.append(node('h4', '', 'Team result'), node('p', 'team-text team-result', run.final));
+    appendArtifactActions(output, job);
   }
   for (const stage of ['plan', 'draft', 'check']) {
     if (run[stage]) output.append(detail(roles[stage].label, run[stage]));
@@ -44,17 +54,13 @@ export function appendTeamOutput(card, job) {
   if (output.childElementCount) card.append(output);
 }
 
-function revisionNotes(job) {
-  const test = job.testRuns.at(-1);
-  if (test && !test.passed) return test.notes;
-  const review = job.reviews.at(-1);
-  return review && !review.approved ? review.notes : '';
-}
-
-export function createTeamControls({ store, render, setFilter, feedback }) {
+export function createTeamControls({ store, render, setFilter, feedback, notifyHuman }) {
   const statusText = document.querySelector('#team-connection');
   const refreshButton = document.querySelector('#team-refresh');
+  const modelSelect = document.querySelector('#team-model');
+  const consentText = document.querySelector('#team-consent');
   const stationLink = document.querySelector('#team-station-link');
+  const liveStatus = document.querySelector('#team-live-status');
   let configured = false;
   let checking = false;
   let active = null;
@@ -71,13 +77,28 @@ export function createTeamControls({ store, render, setFilter, feedback }) {
       });
       if (!response.ok) throw new Error();
       const status = await response.json();
-      if (typeof status.configured !== 'boolean') throw new Error();
-      configured = status.configured;
+      if (!Array.isArray(status.providers)) throw new Error();
+      const previous = modelSelect.value;
+      modelSelect.replaceChildren();
+      for (const provider of status.providers) {
+        for (const model of provider.models) {
+          const option = node('option', '', `${provider.label} · ${model}`);
+          option.value = `${provider.id}/${model}`;
+          option.dataset.provider = provider.id;
+          option.dataset.model = model;
+          modelSelect.append(option);
+        }
+      }
+      if ([...modelSelect.options].some(option => option.value === previous)) modelSelect.value = previous;
+      configured = modelSelect.options.length > 0;
+      modelSelect.disabled = !configured;
       statusText.textContent = configured
-        ? `Configured model · ${status.model}`
-        : 'Setup required. Add OPENAI_API_KEY to the island server, then check again.';
+        ? `${modelSelect.options.length} model${modelSelect.options.length === 1 ? '' : 's'} available`
+        : 'No models available. Start Ollama and pull a model, or configure an OpenAI key.';
+      updateConsent();
     } catch {
       configured = false;
+      modelSelect.disabled = true;
       statusText.textContent = 'Agent service unavailable. Check that the island server is running, then check again.';
     } finally {
       checking = false;
@@ -86,45 +107,51 @@ export function createTeamControls({ store, render, setFilter, feedback }) {
     }
   }
 
-  async function run(jobId) {
-    if (active || !configured) return;
-    const id = crypto.randomUUID();
+  function updateConsent() {
+    const selected = modelSelect.selectedOptions[0];
+    consentText.textContent = selected?.dataset.provider === 'ollama'
+      ? 'Jobs sent to this model run through Ollama on this computer. Keep this tab open while the team works.'
+      : 'Jobs sent to this model use your OpenAI API project. Keep this tab open while the team works.';
+  }
+
+  async function run(jobId, override, initialFeedback = '') {
+    if (active || (!configured && !override)) return { status: 'unavailable' };
+    const selected = override || modelSelect.selectedOptions[0];
+    if (!selected) return;
+    const provider = override?.provider || selected.dataset.provider;
+    const model = override?.model || selected.dataset.model;
     const controller = new AbortController();
-    active = { jobId, id, controller, claimed: false };
+    active = { jobId, id: null, controller, claimed: false };
     try {
-      const started = await store.mutate(board => startTeamRun(board, jobId, id));
-      if (!started.ok) { feedback(started.message, true); return; }
-      active.claimed = true;
       setFilter('in_progress');
       feedback('');
-      let job = started.job;
-      for (const stage of TEAM_STAGES) {
-        if (job.teamRun[stage]) continue;
-        const { plan, draft, check, previousFinal } = job.teamRun;
+      const outcome = await runAutonomousJob({
+        store, jobId, signal: controller.signal, smokeTest: smokeTestDeliverable,
+        notifyHuman, initialFeedback,
+        onProgress: feedback,
+        newRunId() { active.id = crypto.randomUUID(); active.claimed = true; return active.id; },
+        async callStep(input) {
         const response = await fetch('/api/agents/step', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal,
-          body: JSON.stringify({
-            stage, title: job.title, description: job.description, plan, draft, check,
-            previous: previousFinal, feedback: revisionNotes(job),
-          }),
+          body: JSON.stringify({ ...input, provider, model }),
         });
         const result = await response.json().catch(() => ({}));
         if (!response.ok || typeof result.text !== 'string') {
           throw new Error(result.error || 'The model service did not return a result. Check the connection and retry.');
         }
-        if (controller.signal.aborted) return;
-        const saved = await store.mutate(board => saveTeamStep(board, jobId, id, stage, result.text));
-        if (!saved.ok) { feedback(saved.message, true); return; }
-        job = saved.job;
-      }
-      feedback('The team submitted its result. Open Tests to check it.');
+        return result.text;
+        },
+      });
+      if (outcome.status === 'failed_to_start') feedback(outcome.reason, true);
+      if (outcome.status === 'completed') setFilter('completed');
+      return outcome;
     } catch (error) {
       if (controller.signal.aborted || destroyed) return;
       const message = error instanceof TypeError ? 'Connection lost. Check the island server and retry.' : error.message;
-      const stopped = await store.mutate(board => stopTeamRun(board, jobId, id, message));
-      feedback(stopped.ok ? message : stopped.message, true);
+      feedback(message, true);
+      return { status: 'error', reason: message };
     } finally {
       active = null;
       if (!destroyed) render();
@@ -147,8 +174,15 @@ export function createTeamControls({ store, render, setFilter, feedback }) {
   function update(board) {
     if (active?.claimed) {
       const runState = board.jobs.find(job => job.id === active.jobId)?.teamRun;
-      if (runState?.id !== active.id || runState.status !== 'running') active.controller.abort();
+      // A model failure is saved before the Helpdesk call. Keep this attempt alive
+      // until the Helpdesk has tried; explicit Stop still aborts it directly.
+      if (shouldAbortTeamRun(active, runState)) active.controller.abort();
     }
+    const assigned = board.jobs.find(item => item.claimedBy === TEAM_AGENT_ID && !['completed', 'available'].includes(item.status));
+    const activeStage = assigned?.teamRun?.status === 'running' ? TEAM_STAGES.find(stage => !assigned.teamRun[stage]) : null;
+    const role = activeStage === 'draft' ? 'Writer' : activeStage === 'check' ? 'Checker' : activeStage === 'final' || activeStage === 'plan' ? 'Island lead' : assigned?.status === 'testing' && active?.jobId === assigned.id ? 'Agent Tester' : assigned?.status === 'review' && active?.jobId === assigned.id ? 'Agent Reviewer' : null;
+    liveStatus.textContent = role ? `${role} working · ${assigned.title}` : assigned ? `AI team waiting · ${assigned.title}` : 'AI team available';
+    liveStatus.classList.toggle('is-working', !!role);
     const job = board.jobs.find(item => item.claimedBy === TEAM_AGENT_ID && ['testing', 'review'].includes(item.status));
     stationLink.hidden = !job;
     if (job) {
@@ -183,8 +217,15 @@ export function createTeamControls({ store, render, setFilter, feedback }) {
   }
 
   refreshButton.addEventListener('click', refresh);
+  modelSelect.addEventListener('change', updateConsent);
   return {
     refresh, update, addActions,
-    destroy() { destroyed = true; active?.controller.abort(); refreshButton.removeEventListener('click', refresh); },
+    runJob: (jobId, model, guidance) => run(jobId, model, guidance),
+    selectedModel() {
+      const option = modelSelect.selectedOptions[0];
+      return configured && option ? { provider: option.dataset.provider, model: option.dataset.model } : null;
+    },
+    cancel(jobId) { if (active?.jobId === jobId) active.controller.abort(); },
+    destroy() { destroyed = true; active?.controller.abort(); refreshButton.removeEventListener('click', refresh); modelSelect.removeEventListener('change', updateConsent); },
   };
 }

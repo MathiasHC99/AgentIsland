@@ -5,6 +5,8 @@ export const JOB_LIMITS = Object.freeze({ title: 120, description: 2000, agentNa
 export const CHECK_LIMITS = Object.freeze({ notes: 2000 });
 export const AGENT_STATUSES = Object.freeze(['idle', 'busy', 'relaxing', 'sleeping']);
 export const HELP_LIMITS = Object.freeze({ title: 120, details: 2000, author: 60 });
+export const IDEA_LIMITS = Object.freeze({ title: 120, why: 360, doneWhen: 360, count: 40, cooldownMs: 86_400_000 });
+export const TODO_LIMITS = Object.freeze({ title: 300, details: 1000, count: 300 });
 export const TEAM_AGENT_ID = 'island-lead';
 export const TEAM_STAGES = Object.freeze(['plan', 'draft', 'check', 'final']);
 const TEAM_OUTPUT_LIMIT = 12000;
@@ -23,12 +25,131 @@ function uniqueId(board, kind = 'job') {
   let id;
   do {
     id = `${kind}-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${(++fallbackSequence).toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
-  } while (board.jobs.some(job => job.id === id) || board.helpRequests?.some(request => request.id === id));
+  } while (board.jobs.some(job => job.id === id) || board.helpRequests?.some(request => request.id === id)
+    || board.ideas?.some(idea => idea.id === id) || board.todos?.some(todo => todo.id === id));
   return id;
 }
 
 export function createJobBoard() {
-  return { version: 2, jobs: [], agents: [], helpRequests: [] };
+  return { version: 2, jobs: [], agents: [], helpRequests: [], ideas: [], lastIdeaAt: null, dailyIdeas: false, todos: [] };
+}
+
+function seedTodoId(section, title) {
+  const value = `${section}:${title}`;
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  return `todo-seed-${(hash >>> 0).toString(36)}-${value.length.toString(36)}`;
+}
+
+function makeTodoRoom(board) {
+  if (board.todos.length < TODO_LIMITS.count) return true;
+  const removed = board.todos.findIndex(todo => todo.hidden);
+  if (removed < 0) return false;
+  board.todos.splice(removed, 1);
+  return true;
+}
+
+export function syncSeedTodos(board, seeds) {
+  if (!Array.isArray(seeds)) return failure('invalid_seed', 'The project todo plan could not be read.');
+  let added = 0;
+  for (const seed of seeds) {
+    if (!record(seed) || !text(seed.title, TODO_LIMITS.title) || !text(seed.section, 60)
+        || typeof seed.done !== 'boolean') continue;
+    const id = seedTodoId(seed.section, seed.title);
+    if (board.todos.some(todo => todo.id === id)) continue;
+    if (!makeTodoRoom(board)) break;
+    board.todos.push({ id, title: seed.title, details: '', source: 'plan', section: seed.section,
+      done: seed.done, hidden: false, createdAt: now() });
+    added++;
+  }
+  return { ok: true, added };
+}
+
+export function addTodo(board, input = {}) {
+  if (!record(input) || !text(input.title, TODO_LIMITS.title)
+      || !text(input.details ?? '', TODO_LIMITS.details, false)
+      || !['user', 'agent'].includes(input.source)) {
+    return failure('invalid_todo', 'Give the todo a title, optional details, and an author.');
+  }
+  const title = input.title.trim();
+  const key = ideaKey(title);
+  if (board.todos.some(todo => !todo.hidden && ideaKey(todo.title) === key)) {
+    return failure('todo_duplicate', 'This task is already on the noticeboard.');
+  }
+  if (!makeTodoRoom(board)) return failure('todo_full', 'The noticeboard is full. Remove an old item first.');
+  const todo = { id: uniqueId(board, 'todo'), title, details: (input.details ?? '').trim(), source: input.source,
+    section: input.source === 'agent' ? 'Agent ideas' : 'Your notes', done: false, hidden: false, createdAt: now() };
+  board.todos.push(todo);
+  return { ok: true, todo };
+}
+
+export function setTodoDone(board, todoId, done) {
+  const todo = board.todos.find(item => item.id === todoId && !item.hidden);
+  if (!todo || typeof done !== 'boolean') return failure('todo_not_found', 'This task is no longer on the noticeboard.');
+  todo.done = done;
+  return { ok: true, todo };
+}
+
+export function removeTodo(board, todoId) {
+  const todo = board.todos.find(item => item.id === todoId && !item.hidden);
+  if (!todo) return failure('todo_not_found', 'This task is no longer on the noticeboard.');
+  todo.hidden = true;
+  return { ok: true, todo };
+}
+
+const ideaKey = title => String(title).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+export function canBrainstorm(board, at = Date.now()) {
+  return !board.lastIdeaAt || at - Date.parse(board.lastIdeaAt) >= IDEA_LIMITS.cooldownMs;
+}
+
+export function saveIdeas(board, proposals) {
+  if (!Array.isArray(proposals) || proposals.length < 1 || proposals.length > 3 || proposals.some(idea =>
+    !record(idea) || !text(idea.title, IDEA_LIMITS.title) || !text(idea.why, IDEA_LIMITS.why)
+    || !text(idea.doneWhen, IDEA_LIMITS.doneWhen))) {
+    return failure('invalid_ideas', 'The team did not return one to three usable ideas.');
+  }
+  if (!canBrainstorm(board)) return failure('idea_cooldown', 'The Idea Garden can brainstorm again tomorrow.');
+  const known = new Set([...board.jobs.map(job => ideaKey(job.title)), ...board.ideas.map(idea => ideaKey(idea.title))]);
+  const added = [];
+  for (const proposal of proposals) {
+    const title = proposal.title.trim();
+    const key = ideaKey(title);
+    if (!key || known.has(key)) continue;
+    const oldestInactive = board.ideas.findIndex(idea => idea.status !== 'new');
+    if (board.ideas.length >= IDEA_LIMITS.count && oldestInactive >= 0) board.ideas.splice(oldestInactive, 1);
+    if (board.ideas.length >= IDEA_LIMITS.count) break;
+    const idea = { id: uniqueId(board, 'idea'), title, why: proposal.why.trim(), doneWhen: proposal.doneWhen.trim(),
+      status: 'new', createdAt: now(), jobId: null };
+    board.ideas.push(idea);
+    known.add(key);
+    added.push(idea);
+  }
+  board.lastIdeaAt = now();
+  return { ok: true, ideas: added };
+}
+
+export function dismissIdea(board, ideaId) {
+  const idea = board.ideas.find(item => item.id === ideaId);
+  if (!idea || idea.status !== 'new') return failure('idea_unavailable', 'This idea is no longer available.');
+  idea.status = 'dismissed';
+  return { ok: true, idea };
+}
+
+export function plantIdea(board, ideaId) {
+  const idea = board.ideas.find(item => item.id === ideaId);
+  if (!idea || idea.status !== 'new') return failure('idea_unavailable', 'This idea is no longer available.');
+  const created = postJob(board, { title: idea.title, description: `${idea.why}\n\nDone when: ${idea.doneWhen}` });
+  if (!created.ok) return created;
+  idea.status = 'planted';
+  idea.jobId = created.job.id;
+  return { ok: true, idea, job: created.job };
+}
+
+export function setDailyIdeas(board, enabled) {
+  if (typeof enabled !== 'boolean') return failure('invalid_preference', 'Choose whether daily ideas are on or off.');
+  board.dailyIdeas = enabled;
+  return { ok: true };
 }
 
 /** Re-registering a stable identity is safe and never resets its current assignment. */
@@ -64,6 +185,16 @@ export function postJob(board, input = {}) {
     legacyCompletion: false,
   };
   board.jobs.push(job);
+  return { ok: true, job };
+}
+
+/** Remove a job at any stage and release its assigned agent. */
+export function deleteJob(board, jobId) {
+  const index = board.jobs.findIndex(job => job.id === jobId);
+  if (index < 0) return failure('job_not_found', 'This job is no longer on the board.');
+  const [job] = board.jobs.splice(index, 1);
+  const agent = board.agents.find(item => item.id === job.claimedBy && item.jobId === job.id);
+  if (agent) { agent.status = 'idle'; agent.jobId = null; }
   return { ok: true, job };
 }
 
@@ -293,7 +424,8 @@ export function wakeAgent(board, agentId) {
 export function postHelpRequest(board, input = {}) {
   if (!record(input) || !text(input.title, HELP_LIMITS.title)
       || !text(input.details ?? '', HELP_LIMITS.details, false)
-      || !text(input.author ?? 'You', HELP_LIMITS.author)) {
+      || !text(input.author ?? 'You', HELP_LIMITS.author)
+      || !(input.jobId === undefined || identifier(input.jobId))) {
     return failure('invalid_help_request', 'Use a title of 1–120 characters, details up to 2,000 characters, and a name of 1–60 characters.');
   }
   const request = {
@@ -304,8 +436,60 @@ export function postHelpRequest(board, input = {}) {
     status: 'open',
     createdAt: now(),
     resolvedAt: null,
+    jobId: input.jobId ?? null,
+    helperStatus: 'queued',
+    helperNote: '',
+    resumeOnAnswer: input.resumeOnAnswer !== false,
   };
   board.helpRequests.push(request);
+  return { ok: true, request };
+}
+
+export function claimAgentHelp(board, requestId) {
+  const request = board.helpRequests.find(item => item.id === requestId);
+  if (!request || request.status !== 'open' || request.helperStatus !== 'queued') {
+    return failure('help_unavailable', 'This Helpdesk request is no longer queued.');
+  }
+  if (board.helpRequests.some(item => item.status === 'open' && item.helperStatus === 'working')) {
+    return failure('helper_busy', 'The Helpdesk agent is already helping another request.');
+  }
+  const next = board.helpRequests.find(item => item.status === 'open' && item.helperStatus === 'queued');
+  if (next?.id !== requestId) return failure('help_waiting', 'An earlier Helpdesk request is ahead in the queue.');
+  request.helperStatus = 'working';
+  return { ok: true, request };
+}
+
+export function finishAgentHelp(board, requestId, answer) {
+  const request = board.helpRequests.find(item => item.id === requestId);
+  if (!request || request.status !== 'open' || request.helperStatus !== 'working') {
+    return failure('help_unavailable', 'This Helpdesk request is no longer being handled.');
+  }
+  if (!record(answer) || typeof answer.resolved !== 'boolean' || !text(answer.guidance, 1500)) {
+    return failure('invalid_help_answer', 'The helper must provide a clear answer.');
+  }
+  request.helperNote = answer.guidance.trim();
+  request.helperStatus = answer.resolved ? 'answered' : 'needs_human';
+  if (answer.resolved) {
+    request.status = 'resolved';
+    request.resolvedAt = now();
+  }
+  return { ok: true, request };
+}
+
+export function cancelAgentHelp(board, requestId) {
+  const request = board.helpRequests.find(item => item.id === requestId);
+  if (!request || request.helperStatus !== 'working') return failure('help_unavailable', 'This Helpdesk request is no longer being handled.');
+  request.helperStatus = 'cancelled';
+  return { ok: true, request };
+}
+
+export function requeueAgentHelp(board, requestId) {
+  const request = board.helpRequests.find(item => item.id === requestId);
+  if (!request || request.status !== 'open' || !['working', 'needs_human', 'cancelled'].includes(request.helperStatus)) {
+    return failure('help_unavailable', 'This Helpdesk request cannot be retried.');
+  }
+  request.helperStatus = 'queued';
+  request.helperNote = '';
   return { ok: true, request };
 }
 
@@ -313,8 +497,10 @@ export function resolveHelpRequest(board, requestId) {
   const request = board.helpRequests.find(item => item.id === requestId);
   if (!request) return failure('request_not_found', 'This question is no longer at the helpdesk.');
   if (request.status !== 'open') return failure('request_resolved', 'This question has already been resolved.');
+  if (request.helperStatus === 'working') return failure('helper_working', 'The Helpdesk agent is still working on this question.');
   request.status = 'resolved';
   request.resolvedAt = now();
+  if (request.helperStatus === 'queued') request.helperStatus = 'cancelled';
   return { ok: true, request };
 }
 
@@ -346,7 +532,13 @@ function readTeamRun(value, job) {
 function validatedBoard(value) {
   if (!record(value) || ![1, 2].includes(value.version) || !Array.isArray(value.jobs) || !Array.isArray(value.agents)) return null;
   if (value.helpRequests !== undefined && !Array.isArray(value.helpRequests)) return null;
+  if (value.ideas !== undefined && !Array.isArray(value.ideas)) return null;
+  if (value.lastIdeaAt !== undefined && value.lastIdeaAt !== null && !timestamp(value.lastIdeaAt)) return null;
+  if (value.dailyIdeas !== undefined && typeof value.dailyIdeas !== 'boolean') return null;
+  if (value.todos !== undefined && !Array.isArray(value.todos)) return null;
   const board = createJobBoard();
+  board.lastIdeaAt = value.lastIdeaAt ?? null;
+  board.dailyIdeas = value.dailyIdeas ?? false;
   const agents = new Map();
   const jobs = new Map();
   for (const item of value.agents) {
@@ -431,7 +623,11 @@ function validatedBoard(value) {
         || !text(item.title, HELP_LIMITS.title) || !text(item.details, HELP_LIMITS.details, false)
         || !text(item.author, HELP_LIMITS.author) || !['open', 'resolved'].includes(item.status)
         || !timestamp(item.createdAt)
-        || !(item.resolvedAt === null || timestamp(item.resolvedAt))) return null;
+        || !(item.resolvedAt === null || timestamp(item.resolvedAt))
+        || !(item.jobId === undefined || item.jobId === null || identifier(item.jobId))
+        || !(item.helperStatus === undefined || ['none', 'queued', 'working', 'answered', 'needs_human', 'cancelled'].includes(item.helperStatus))
+        || !(item.resumeOnAnswer === undefined || typeof item.resumeOnAnswer === 'boolean')
+        || !(item.helperNote === undefined || text(item.helperNote, 1500, false))) return null;
     if (item.status === 'open' && item.resolvedAt !== null) return null;
     if (item.status === 'resolved' && (!timestamp(item.resolvedAt)
         || Date.parse(item.resolvedAt) < Date.parse(item.createdAt))) return null;
@@ -439,7 +635,35 @@ function validatedBoard(value) {
     board.helpRequests.push({
       id: item.id, title: item.title.trim(), details: item.details.trim(), author: item.author.trim(),
       status: item.status, createdAt: item.createdAt, resolvedAt: item.resolvedAt,
+      jobId: item.jobId ?? null,
+      helperStatus: item.status === 'open' && (!item.helperStatus || item.helperStatus === 'none') ? 'queued' : item.helperStatus,
+      helperNote: (item.helperNote ?? '').trim(),
+      resumeOnAnswer: item.resumeOnAnswer ?? true,
     });
+  }
+  if ((value.ideas?.length ?? 0) > IDEA_LIMITS.count) return null;
+  const ideaIds = new Set();
+  for (const item of value.ideas ?? []) {
+    if (!record(item) || !identifier(item.id) || ideaIds.has(item.id) || jobs.has(item.id) || requestIds.has(item.id)
+        || !text(item.title, IDEA_LIMITS.title) || !text(item.why, IDEA_LIMITS.why)
+        || !text(item.doneWhen, IDEA_LIMITS.doneWhen) || !['new', 'dismissed', 'planted'].includes(item.status)
+        || !timestamp(item.createdAt) || !(item.jobId === null || identifier(item.jobId))
+        || (item.status === 'planted') !== (item.jobId !== null)) return null;
+    ideaIds.add(item.id);
+    board.ideas.push({ id: item.id, title: item.title.trim(), why: item.why.trim(), doneWhen: item.doneWhen.trim(),
+      status: item.status, createdAt: item.createdAt, jobId: item.jobId });
+  }
+  if ((value.todos?.length ?? 0) > TODO_LIMITS.count) return null;
+  const todoIds = new Set();
+  for (const item of value.todos ?? []) {
+    if (!record(item) || !identifier(item.id) || todoIds.has(item.id) || jobs.has(item.id)
+        || requestIds.has(item.id) || ideaIds.has(item.id) || !text(item.title, TODO_LIMITS.title)
+        || !text(item.details, TODO_LIMITS.details, false) || !['plan', 'user', 'agent'].includes(item.source)
+        || !text(item.section, 60) || typeof item.done !== 'boolean' || typeof item.hidden !== 'boolean'
+        || !timestamp(item.createdAt)) return null;
+    todoIds.add(item.id);
+    board.todos.push({ id: item.id, title: item.title.trim(), details: item.details.trim(), source: item.source,
+      section: item.section.trim(), done: item.done, hidden: item.hidden, createdAt: item.createdAt });
   }
   return board;
 }

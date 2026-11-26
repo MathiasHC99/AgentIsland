@@ -1,10 +1,16 @@
-import { createWorld, addTile, paintTile, summarizeWorld, hexKey, STATIONS } from './world.js';
-import { IslandRenderer } from './renderer.js';
-import { initWorkbench } from './workbench.js';
-import { createBoardStore } from './board-store.js';
-import { initStations } from './station-ui.js';
-import { initQualityStations } from './quality-ui.js';
-import { IslandExplorer } from './explorer.js';
+import { createWorld, addTile, paintTile, summarizeWorld, hexKey, STATIONS } from './world/world.js';
+import { IslandRenderer } from './world/renderer.js';
+import { initWorkbench } from './ui/workbench.js';
+import { createBoardStore } from './state/board-store.js';
+import { createNotificationQueue } from './state/notification-queue.js';
+import { initStations } from './ui/station-ui.js';
+import { initQualityStations } from './ui/quality-ui.js';
+import { IslandExplorer } from './world/explorer.js';
+import { initShowcase } from './ui/showcase-ui.js';
+import { initNoticeboard } from './ui/noticeboard-ui.js';
+import { initHelpdeskWorker } from './agents/helpdesk-worker.js';
+import { syncSeedTodos } from './domain/jobs.js';
+import { seedTodos } from './todo-seed.js';
 
 const $ = selector => document.querySelector(selector);
 const canvas = $('#island');
@@ -21,7 +27,19 @@ let workbench;
 let stations;
 let qualityStations;
 let explorer;
-const boardStore = createBoardStore();
+let showcase;
+let noticeboard;
+let helpdeskWorker;
+let celebrationTimer;
+const notificationQueue = createNotificationQueue();
+const boardStore = createBoardStore({ onJobEvent: event => {
+  notificationQueue.add(event);
+  if (event.type === 'completed') celebrate();
+} });
+void boardStore.mutate(board => syncSeedTodos(board, seedTodos));
+void notificationQueue.flush();
+setInterval(() => { void notificationQueue.flush(); }, 30_000);
+window.addEventListener('online', () => { void notificationQueue.flush(); });
 
 function announce(message) {
   const element = $('#announcement');
@@ -29,6 +47,16 @@ function announce(message) {
   element.textContent = message;
   element.classList.add('visible');
   announcementTimer = setTimeout(() => element.classList.remove('visible'), 1900);
+}
+
+function celebrate() {
+  const display = $('#celebration');
+  clearTimeout(celebrationTimer);
+  display.classList.remove('visible');
+  void display.offsetWidth;
+  display.classList.add('visible');
+  celebrationTimer = setTimeout(() => display.classList.remove('visible'), 2100);
+  announce('A new project joins the showcase!');
 }
 
 function refreshWorld() {
@@ -77,9 +105,18 @@ function prepareStation() {
   showHelp(false);
   setTool('explore');
 }
-workbench = initWorkbench({ renderer, store: boardStore, onBeforeOpen: prepareStation });
-stations = initStations({ renderer, store: boardStore, onBeforeOpen: prepareStation, openWorkbench: () => workbench.open() });
+workbench = initWorkbench({ renderer, store: boardStore, onBeforeOpen: prepareStation,
+  notifyHuman: event => notificationQueue.add(event),
+  onDreaming: active => explorer?.setDreaming(active) });
+stations = initStations({ renderer, store: boardStore, onBeforeOpen: prepareStation,
+  openWorkbench: () => workbench.open(), onSpaOpen: () => workbench.onSpaOpen() });
 qualityStations = initQualityStations({ renderer, store: boardStore, onBeforeOpen: prepareStation });
+showcase = initShowcase({ store: boardStore, onBeforeOpen: prepareStation });
+noticeboard = initNoticeboard({ store: boardStore, onBeforeOpen: prepareStation,
+  getModel: () => workbench.selectedModel() });
+helpdeskWorker = initHelpdeskWorker({ store: boardStore,
+  notifyHuman: event => notificationQueue.add(event),
+  onResolved: (jobId, guidance, model) => workbench.runJob(jobId, model, `Helpdesk guidance: ${guidance}`) });
 
 function setTool(next) {
   if (explorer?.active && next !== 'explore') explorer.exit();
@@ -177,4 +214,4 @@ explorer = new IslandExplorer(renderer, {
 explorer.setBoard(boardStore.getBoard());
 const unsubscribeExplorer = boardStore.subscribe(board => explorer.setBoard(board));
 updateMotion();
-window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); unsubscribeExplorer(); explorer.destroy(); workbench.destroy(); stations.destroy(); qualityStations.destroy(); boardStore.destroy(); renderer.destroy(); }, { once: true });
+window.addEventListener('pagehide', () => { clearTimeout(announcementTimer); clearTimeout(celebrationTimer); unsubscribeExplorer(); helpdeskWorker.destroy(); explorer.destroy(); workbench.destroy(); stations.destroy(); qualityStations.destroy(); showcase.destroy(); noticeboard.destroy(); boardStore.destroy(); renderer.destroy(); }, { once: true });

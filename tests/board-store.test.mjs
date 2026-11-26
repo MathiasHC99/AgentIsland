@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBoardStore, BOARD_STORAGE_KEY } from '../dist/board-store.js';
-import { createJobBoard, postJob, claimJob, registerAgent, serializeJobBoard, restoreJobBoard, setAgentRest, postHelpRequest } from '../dist/jobs.js';
+import { createBoardStore, BOARD_STORAGE_KEY } from '../src/client/state/board-store.js';
+import { createJobBoard, postJob, claimJob, registerAgent, serializeJobBoard, restoreJobBoard, setAgentRest, postHelpRequest } from '../src/client/domain/jobs.js';
 
 function memoryStorage(initial = null) {
   let raw = initial;

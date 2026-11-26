@@ -1,4 +1,4 @@
-import { registerAgent, setAgentRest, wakeAgent, postHelpRequest, resolveHelpRequest, summarizeHelpdesk } from './jobs.js';
+import { registerAgent, setAgentRest, wakeAgent, postHelpRequest, resolveHelpRequest, requeueAgentHelp, summarizeHelpdesk } from '../domain/jobs.js';
 
 const $ = selector => document.querySelector(selector);
 const PREVIEW_AGENT = 'preview-agent';
@@ -10,7 +10,7 @@ const element = (tag, className, content) => {
 };
 
 /** The helpdesk and spa share the workbench's local agent identities and state. */
-export function initStations({ store, renderer, onBeforeOpen, openWorkbench }) {
+export function initStations({ store, renderer, onBeforeOpen, openWorkbench, onSpaOpen }) {
   let helpFilter = 'open';
   let submitting = false;
 
@@ -40,7 +40,11 @@ export function initStations({ store, renderer, onBeforeOpen, openWorkbench }) {
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     });
-    const requests = board.helpRequests.filter(request => request.status === helpFilter).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const requests = board.helpRequests.filter(request => request.status === helpFilter)
+      .sort((a, b) => helpFilter === 'open'
+        ? a.createdAt.localeCompare(b.createdAt) : b.createdAt.localeCompare(a.createdAt));
+    const queuePosition = new Map(requests.filter(request => request.helperStatus === 'queued')
+      .map((request, index) => [request.id, index + 1]));
     const list = $('#help-list');
     list.replaceChildren();
     if (!requests.length) {
@@ -63,10 +67,28 @@ export function initStations({ store, renderer, onBeforeOpen, openWorkbench }) {
       meta.append(element('span', 'job-date', new Date(request.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })));
       card.append(meta, element('h3', 'job-title', request.title));
       if (request.details) card.append(element('p', 'job-description', request.details));
+      if (request.helperStatus && request.helperStatus !== 'none') {
+        const label = {
+          queued: `Waiting in queue · #${queuePosition.get(request.id)}`, working: 'Helpdesk agent is working',
+          answered: 'Helpdesk agent answered', needs_human: 'Helpdesk needs your help',
+          cancelled: 'Helpdesk attempt stopped',
+        }[request.helperStatus];
+        card.classList.toggle('is-help-working', request.helperStatus === 'working');
+        card.append(element('p', 'help-agent-status', label || 'Helpdesk agent'));
+        if (request.helperNote) card.append(element('p', 'help-agent-note', request.helperNote));
+      }
       const footer = element('div', 'job-card-footer');
       footer.append(element('span', 'job-owner', `${request.status === 'resolved' ? '✓ Resolved · ' : ''}Asked by ${request.author}`));
       if (request.status === 'open') {
+        if (['needs_human', 'cancelled'].includes(request.helperStatus)) {
+          const retry = element('button', 'secondary-button', 'Retry Helpdesk agent');
+          retry.addEventListener('click', async () => {
+            await mutate('helpdesk', current => requeueAgentHelp(current, request.id), 'The Helpdesk agent will try again.');
+          });
+          footer.append(retry);
+        }
         const resolve = element('button', 'secondary-button resolve-help', 'Mark resolved');
+        resolve.disabled = request.helperStatus === 'working';
         resolve.addEventListener('click', () => mutate('helpdesk', current => resolveHelpRequest(current, request.id), 'A little clarity. Your question is marked resolved.'));
         footer.append(resolve);
       }
@@ -127,6 +149,7 @@ export function initStations({ store, renderer, onBeforeOpen, openWorkbench }) {
     onBeforeOpen?.();
     render();
     $(`#${station}-panel`).showModal();
+    if (station === 'spa') void onSpaOpen?.();
   }
 
   for (const station of ['helpdesk', 'spa']) {

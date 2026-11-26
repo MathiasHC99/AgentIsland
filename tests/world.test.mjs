@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   TERRAINS, START_HEX, STATIONS, createWorld, hexKey, neighbors, axialToWorld, frontierTiles,
   addTile, paintTile, summarizeWorld, seededRandom,
-} from '../dist/world.js';
+} from '../src/client/world/world.js';
 
 test('initial island is stable, contiguous, varied, and bounded to a small footprint', () => {
   const world = createWorld('test-island');

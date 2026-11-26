@@ -588,6 +588,11 @@ export class IslandRenderer {
     ctx.fillStyle = obj.color; ctx.fillRect(-.013, -.76, .026, .07);
     ellipse(ctx, 0, -.78, .04, .03, obj.light);
     ctx.restore();
+    if (obj.status === 'working') {
+      ctx.font = 'bold 9px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff1d7'; ctx.beginPath(); ctx.roundRect(p.x - 26, p.y - s * .9 - 11, 52, 17, 8); ctx.fill();
+      ctx.fillStyle = '#80502b'; ctx.fillText('WORKING', p.x, p.y - s * .9 + 1);
+    }
     if (obj.player) {
       ctx.font = '10px "Trebuchet MS", sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#fffbed';
       ctx.beginPath(); ctx.roundRect(p.x - 16, p.y - s * .9 - 11, 32, 18, 9); ctx.fill();
